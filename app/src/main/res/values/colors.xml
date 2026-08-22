@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- huashu-design 规范：暖色底 + 单一强调色(rust 橙单点贯穿) -->
+    <color name="tapcreator_anchor">#A64B2A</color>
+    <color name="tapcreator_paper">#F7F4EE</color>
+    <color name="tapcreator_ink">#1C1A17</color>
+    <color name="tapcreator_inverse_paper">#17150F</color>
+    <color name="tapcreator_inverse_ink">#E9E3D8</color>
+</resources>

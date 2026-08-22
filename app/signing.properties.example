@@ -1,0 +1,14 @@
+# tapcreator release 签名配置（本文件已 gitignore，勿提交真实密钥）
+# 拷贝本文件为 app/signing.properties 并填入真实值：
+#   keystoreFile=/absolute/path/to/tapcreator-release.jks (或相对 app 模块路径)
+#   keystorePassword=xxx
+#   keyAlias=tapcreator
+#   keyPassword=xxx
+# 生成 keystore 示例：
+#   keytool -genkeypair -v -keystore tapcreator-release.jks -alias tapcreator \
+#     -keyalg RSA -keysize 2048 -validity 10000
+# 若本文件不存在或 keystoreFile 指向的文件缺失，release 会退回未签名，不报错。
+keystoreFile=
+keystorePassword=
+keyAlias=
+keyPassword=

@@ -1,0 +1,15 @@
+# 本地签名密钥与配置——绝不入库
+app/signing.properties
+*.jks
+*.keystore
+
+# Gradle / 构建产物
+.gradle/
+build/
+local.properties
+
+# IDE / Kotlin 编译缓存
+.idea/
+.kotlin/
+*.hprof
+captures/

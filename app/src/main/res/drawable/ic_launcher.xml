@@ -1,0 +1,31 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 米白背景 -->
+    <path
+        android:fillColor="#F7F4EE"
+        android:pathData="M0,0h108v108h-108z" />
+    <!-- t 横杠 -->
+    <path
+        android:fillColor="#A64B2A"
+        android:pathData="M18,28 H50 V38 H37 V80 H31 V38 H18 Z" />
+    <!-- A 空心三角环 -->
+    <path
+        android:fillColor="#A64B2A"
+        android:fillType="evenOdd"
+        android:pathData="M68,28 L50,80 H86 Z M68,42 H77 L59,75 Z" />
+    <!-- A 中横 -->
+    <path
+        android:fillColor="#A64B2A"
+        android:pathData="M59,54 H77 V62 H59 Z" />
+    <!-- p 竖杆 -->
+    <path
+        android:fillColor="#A64B2A"
+        android:pathData="M73,28 H79 V80 H73 Z" />
+    <!-- p 上部圆(矩形碗) -->
+    <path
+        android:fillColor="#A64B2A"
+        android:pathData="M75,28 H96 V36 H89 V46 H96 V54 H75 V28 Z" />
+</vector>

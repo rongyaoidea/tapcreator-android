@@ -1,0 +1,178 @@
+package com.tapcreator.app.backend.agent
+
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+/**
+ * Agent 工具注册表：集中声明 Agent 能调用的所有动作及其参数 schema。
+ * 生成器据此产出「工具清单」注入 system prompt，使 Agent 直接读取工具即可知道可调用什么，
+ * 无需在提示词中手工维护重复的动作说明。
+ */
+object AgentToolRegistry {
+
+    data class Param(val name: String, val type: String, val desc: String, val required: Boolean = false)
+    data class Tool(val name: String, val desc: String, val params: List<Param>)
+
+    val tools: List<Tool> = listOf(
+        Tool(
+            name = "generate",
+            desc = "调用生成工具创作文本/图片/视频/音频并落为一张卡片。参考矩阵：图像卡只能引图像；视频卡仅作视频参考；生成图像时勿引用视频卡。",
+            params = listOf(
+                Param("tool", "string", "GENERATE_TEXT/GENERATE_IMAGE/GENERATE_VIDEO/GENERATE_AUDIO", true),
+                Param("prompt", "string", "生成内容的提示词", true),
+                Param("ratio", "string", "如 1:1 / 16:9 / 9:16"),
+                Param("resolution", "string", "模型输出分辨率，如图片 1024x1024，视频 1080P/2K"),
+                Param("quality", "string", "high/medium/low"),
+                Param("seconds", "integer", "视频总秒数"),
+                Param("reference", "integer", "引用本运行内第 N 个产出（从1计）"),
+                Param("reference_card", "string", "引用本会话既有卡片 id"),
+                Param("reference_folder", "string", "素材库文件夹名，固定人物/产品形象"),
+                Param("motion", "number", "运动强度 scale"),
+                Param("cfgScale", "number", "CFG scale"),
+            ),
+        ),
+        Tool("list_cards", "列出本会话所有卡片（id/类型/标题/内容摘要）。", emptyList()),
+        Tool(
+            "read_card", "读取单张卡片完整内容。", listOf(Param("card_id", "string", "卡片 id", true)),
+        ),
+        Tool(
+            "update_card", "修改卡片标题与文本内容。",
+            listOf(
+                Param("card_id", "string", "卡片 id", true),
+                Param("title", "string", "新标题"),
+                Param("content", "string", "新文本内容"),
+            ),
+        ),
+        Tool(
+            "delete_card", "删除卡片（引用感知：被引用则隐藏，未引用则连同媒体文件删除）。",
+            listOf(Param("card_id", "string", "卡片 id", true)),
+        ),
+        Tool("list_assets", "列出素材库所有文件夹与素材（含素材 id 供整理）。", emptyList()),
+        Tool(
+            "update_asset", "修改素材的登记标题。",
+            listOf(Param("asset_id", "string", "素材 id", true), Param("title", "string", "新名称", true)),
+        ),
+        Tool(
+            "move_asset", "把素材移动到文件夹归类（文件夹不存在自动创建；只传 asset_id 表示移回未归档）。",
+            listOf(
+                Param("asset_id", "string", "素材 id", true),
+                Param("folder_name", "string", "目标文件夹名"),
+                Param("folder_id", "string", "目标文件夹 id"),
+            ),
+        ),
+        Tool(
+            "delete_asset", "删除素材（连同媒体二进制文件，正被卡片使用会拒绝）。",
+            listOf(Param("asset_id", "string", "素材 id", true)),
+        ),
+        Tool(
+            "create_folder", "新建素材文件夹。",
+            listOf(
+                Param("folder_name", "string", "文件夹名", true),
+                Param("folder_kind", "string", "folder/role/product，默认 folder"),
+            ),
+        ),
+        Tool(
+            "delete_folder", "删除文件夹（其内素材移回未归档，不删素材文件）。",
+            listOf(Param("folder_id", "string", "文件夹 id"), Param("folder_name", "string", "文件夹名")),
+        ),
+        Tool("web_search", "联网搜索，返回标题+链接，用于获取外部知识。",
+            listOf(Param("query", "string", "搜索词", true))),
+        Tool("fetch_url", "读取网页正文（仅 http/https），用于参考链接内容。",
+            listOf(Param("url", "string", "网页链接", true))),
+        Tool(
+            "configure_resolution", "查询或设置某图像/视频模型的可选分辨率。模型未声明分辨率时用它读取内置知识库给用户参考，或用调研结果把模型的可选分辨率写入配置（逗号分隔）。",
+            listOf(
+                Param("model_name", "string", "模型名", true),
+                Param("resolutions", "string", "要写入的可选分辨率，逗号分隔；不填则仅查询当前/内置知识库"),
+            ),
+        ),
+        Tool("memorize", "记住一条事实供后续复用。", listOf(Param("memory", "string", "要记忆的内容", true))),
+        Tool("recall", "回顾已记忆内容。", listOf(Param("memory", "string", "检索关键词"))),
+        Tool("list_runs", "回顾本会话此前的 Agent 执行批次（run_id/轮数/时长），供自我复盘。", emptyList()),
+        Tool("read_trace", "读取某次执行批次 run_id 的完整思考/动作/观察轨迹，用于复盘失败或复制成功经验。",
+            listOf(Param("run_id", "string", "list_runs 得到的执行批次 id", true))),
+        Tool("write_skill", "把可复用启发式沉淀为技能入库（自进化）。low 风险直接生效；high 风险（涉及删除/改写用户预期）进入待审批。",
+            listOf(
+                Param("content", "string", "一句可执行规则（≤200字）", true),
+                Param("category", "string", "分类：generate/flow/reference/folder/toolfix/layout"),
+                Param("risk", "string", "low 或 high，默认 low"),
+            )),
+        Tool("read_skills", "查看当前已生效的技能库与待审批技能，了解已沉淀的经验。", emptyList()),
+        Tool("retire_skill", "撤销某条已沉淀技能。", listOf(Param("skill_id", "string", "技能 id", true))),
+        Tool("link_cards", "在两卡片间建立引用关系边（主动梳理关系链/引用）。",
+            listOf(
+                Param("from_card_id", "string", "源卡片 id", true),
+                Param("to_card_id", "string", "目标卡片 id", true),
+                Param("role", "string", "reference/parent，默认 reference"),
+            )),
+        Tool("unlink_cards", "解除两卡片之间的引用关系边。",
+            listOf(
+                Param("from_card_id", "string", "源卡片 id", true),
+                Param("to_card_id", "string", "目标卡片 id", true),
+                Param("role", "string", "reference/parent，默认 reference"),
+            )),
+        Tool("layout_canvas", "重新整理本会话所有节点在画布上的网格布局（坐标持久化）。", emptyList()),
+        Tool("finish", "结束本轮并把结果汇报给用户。", listOf(Param("summary", "string", "给用户的收尾文本"))),
+    )
+
+    /** 渲染为 JSON 数组形式的工具清单（合法 JSON），供 Agent 直接读取以了解可调用能力 */
+    fun toPromptTable(): String = buildString {
+        appendLine("可用工具（输出对象的 action 必须取 name 之一；字段见 parameters）：")
+        appendLine("[")
+        tools.forEachIndexed { i, t ->
+            val params = t.params.joinToString(", ") { p ->
+                val req = if (p.required) " \"required\":true," else ""
+                "{\"name\":\"${esc(p.name)}\",\"type\":\"${esc(p.type)}\",$req\"desc\":\"${esc(p.desc)}\"}"
+            }
+            append("  {\"name\":\"${esc(t.name)}\",\"desc\":\"${esc(t.desc)}\",\"parameters\":[$params]}")
+            if (i == tools.lastIndex) appendLine() else appendLine(",")
+        }
+        appendLine("]")
+        appendLine("generate 示例：{\"action\":\"generate\",\"tool\":\"GENERATE_VIDEO\",\"prompt\":\"...\",\"seconds\":10,\"ratio\":\"16:9\",\"reference_folder\":\"主角小薇\"}")
+        append("每次只做一件事；需要的字段若拿不准，先用 read_card/list_cards/list_assets 或 web_search/fetch_url 获取后再原样填。")
+    }
+
+    /** OpenAI 兼容 function-calling schema。供 ProviderGateway.agentChat 在支持的端点上走结构化工具调用；不支持时回退到 toPromptTable 的文本解析。 */
+    fun toFunctionSchemas(): JsonArray = buildJsonArray {
+        tools.forEach { t ->
+            add(
+                buildJsonObject {
+                    put("type", "function")
+                    put(
+                        "function",
+                        buildJsonObject {
+                            put("name", t.name)
+                            put("description", t.desc)
+                            put(
+                                "parameters",
+                                buildJsonObject {
+                                    put("type", "object")
+                                    put(
+                                        "properties",
+                                        buildJsonObject {
+                                            t.params.forEach { p ->
+                                                put(
+                                                    p.name,
+                                                    buildJsonObject { put("type", p.type); put("description", p.desc) },
+                                                )
+                                            }
+                                        },
+                                    )
+                                    val rq = t.params.filter { it.required }.map { it.name }
+                                    if (rq.isNotEmpty()) {
+                                        put("required", buildJsonArray { rq.forEach { add(JsonPrimitive(it)) } })
+                                    }
+                                },
+                            )
+                        },
+                    )
+                },
+            )
+        }
+    }
+
+    private fun esc(s: String): String = s.replace("\\", "\\\\").replace("\"", "\\\"")
+}

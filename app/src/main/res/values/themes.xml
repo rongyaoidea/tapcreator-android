@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.Tapcreator" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/tapcreator_paper</item>
+        <item name="android:statusBarColor">@color/tapcreator_paper</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

@@ -1,0 +1,8 @@
+<resources>
+    <!-- 深色模式：窗口底色/状态栏随主题走，避免页面背后透出亮色或状态栏图标不可读 -->
+    <style name="Theme.Tapcreator" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/tapcreator_inverse_paper</item>
+        <item name="android:statusBarColor">@color/tapcreator_inverse_paper</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
