@@ -322,7 +322,13 @@ class ProviderGateway @Inject constructor(
         model: ModelOption,
         messages: List<ChatMessage>,
         toolsJson: kotlinx.serialization.json.JsonArray? = null,
+        // 用户在面板手动开关：开启时发 reasoning_effort，模型据此输出推理过程；
+        // 关闭时不下发该参数（非 reasoning 模型传此会被 OpenAI 官方拒 400）
+        reasoningEnabled: Boolean = false,
         onToken: (String) -> Unit = {},
+        // 推理过程单独流：DeepSeek-R1 / o1 等模型在 SSE delta.reasoning_content 里返回推理，
+        // 与正文 content 分开，单独回调供 UI 显示「推理」流（不混入动作解析）
+        onReasoning: (String) -> Unit = {},
     ): String {
         val base = normalizeBase(channel.baseUrl)
         val body = buildJsonObject {
@@ -336,6 +342,10 @@ class ProviderGateway @Inject constructor(
             put("temperature", 0.5)
             put("max_tokens", 1500)
             put("stream", true)
+            // 用户手动开启推理：发 reasoning_effort；关闭时不发（非 reasoning 模型传此会被拒 400）
+            if (reasoningEnabled) {
+                put("reasoning_effort", "medium")
+            }
             if (toolsJson != null) {
                 put("tools", toolsJson)
                 put("tool_choice", "auto")
@@ -355,7 +365,7 @@ class ProviderGateway @Inject constructor(
                             if (resp.code != 404) throw TapcreatorException(upstreamError(resp, text, url), "UPSTREAM_HTTP")
                             null
                         } else {
-                            val out = parseSse(resp, onToken)
+                            val out = parseSse(resp, onToken, onReasoning)
                             // 成功但切流无任何内容/工具调用：属空结果，不应回落下一个端点重发
                             if (out == null) throw TapcreatorException("Agent 大脑未返回任何输出", "UPSTREAM_EMPTY")
                             out
@@ -421,7 +431,7 @@ class ProviderGateway @Inject constructor(
             ?: throw TapcreatorException("识图校验无返回", "UPSTREAM_EMPTY")
     }
 
-    private fun parseSse(resp: Response, onToken: (String) -> Unit): String? {
+    private fun parseSse(resp: Response, onToken: (String) -> Unit, onReasoning: (String) -> Unit = {}): String? {
         val source = resp.body?.source() ?: throw TapcreatorException("流式响应无正文", "UPSTREAM_EMPTY")
         val content = StringBuilder()
         var toolName: String? = null
@@ -434,7 +444,7 @@ class ProviderGateway @Inject constructor(
             if (line.isEmpty()) {
                 // 一帧结束：解析缓冲内容
                 if (frame.isEmpty()) continue
-                done = parseFrame(frame.toString(), content, onToken, toolNameRef = { toolName = it }, toolArgs)
+                done = parseFrame(frame.toString(), content, onToken, onReasoning, toolNameRef = { toolName = it }, toolArgs)
                 frame.setLength(0)
                 continue
             }
@@ -448,7 +458,7 @@ class ProviderGateway @Inject constructor(
         }
         // 处理最后一帧（可能没有尾随空行）
         if (!done && frame.isNotEmpty()) {
-            parseFrame(frame.toString(), content, onToken, { toolName = it }, toolArgs)
+            parseFrame(frame.toString(), content, onToken, onReasoning, { toolName = it }, toolArgs)
             frame.setLength(0)
         }
         if (toolName != null) {
@@ -469,6 +479,7 @@ class ProviderGateway @Inject constructor(
         frame: String,
         content: StringBuilder,
         onToken: (String) -> Unit,
+        onReasoning: (String) -> Unit,
         toolNameRef: (String) -> Unit,
         toolArgs: StringBuilder,
     ): Boolean {
@@ -481,6 +492,11 @@ class ProviderGateway @Inject constructor(
         if (!textTok.isNullOrEmpty()) {
             content.append(textTok)
             onToken(textTok)
+        }
+        // 推理过程流：DeepSeek-R1 / o1 等在 delta.reasoning_content 返回推理文本，与正文分开回调
+        val reasonTok = delta?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
+        if (!reasonTok.isNullOrEmpty()) {
+            onReasoning(reasonTok)
         }
         delta?.get("tool_calls")?.jsonArray?.forEach { tc ->
             val fn = tc.jsonObject.get("function")?.jsonObject

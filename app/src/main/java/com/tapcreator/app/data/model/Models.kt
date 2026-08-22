@@ -67,6 +67,8 @@ data class GenerationPreferences(
     val motion: Float? = null,        // MadStory：运动强度 scale（H3 透传 motion.scale）
     val cfgScale: Float? = null,      // MadStory：CFG scale（H3 透传 cfg_scale）
     val prompt: String = "",
+    /** 提示词是否经 LLM 增强；persistOneCard 据此写 CardEntity.promptEnhanced */
+    val promptEnhanced: Boolean = false,
 )
 
 /** 创建 Run 的请求 */
@@ -85,6 +87,8 @@ data class RunRequest(
     val referencedAssetPaths: List<String> = emptyList(), // 跨会话素材参考：全局素材库 mediaPath
     val motion: Float? = null,   // MadStory：运动强度（透传 H3）
     val cfgScale: Float? = null, // MadStory：CFG scale（透传 H3）
+    /** 提示词是否经 LLM 增强（promptOptimize 开关且优化成功）；落卡时写入 CardEntity.promptEnhanced */
+    val promptEnhanced: Boolean = false,
 )
 
 /** 上游生成结果（provider 归一化后） */

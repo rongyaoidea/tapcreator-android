@@ -32,13 +32,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -85,6 +85,10 @@ import com.tapcreator.app.data.db.MessageEntity
 import com.tapcreator.app.data.model.MediaKind
 import com.tapcreator.app.ui.theme.Dimens
 import java.io.File
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -128,12 +132,6 @@ fun ChatScreen(
                 onRename = { renameOpen = true },
                 onOpenTasks = { onOpenTasks(viewModel.conversationId) },
             )
-        },
-        floatingActionButton = {
-            // 自主 Agent：同为创作界面的一部分，以悬浮按钮呼出参与工作
-            FloatingActionButton(onClick = { agentOpen = true }) {
-                Text("Agent", style = MaterialTheme.typography.labelLarge)
-            }
         },
     ) { pad ->
         Column(
@@ -247,14 +245,24 @@ fun ChatScreen(
                 BottomActionButton(text = "🎬 生视频", tint = MaterialTheme.colorScheme.tertiary) {
                     viewModel.startDraft(MediaKind.VIDEO)
                 }
+                BottomActionButton(text = "✦ Agent", tint = MaterialTheme.colorScheme.secondary) {
+                    agentOpen = true
+                }
             }
             }
         }
     }
 
-    // 自主 Agent 浮层：呼出输入面板参与工作
+    // 自主 Agent：全屏页面（覆盖创作工作区），带返回按钮关闭
     if (agentOpen) {
-        AgentSheet(viewModel, onDismiss = { agentOpen = false })
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { agentOpen = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                AgentSheet(viewModel, onDismiss = { agentOpen = false })
+            }
+        }
     }
 
     // 空白卡片编辑浮层：点时间线上的空白卡片后弹出「输入 + 参数」，提交后生成
@@ -535,13 +543,21 @@ private fun androidx.compose.foundation.layout.RowScope.BottomActionButton(text:
 // Agent 流式输出的单个对话气泡：think=大脑实时输出（弱化灰字）、assistant=Agent 动作/思考（左）、user=观察/反馈（右）
 @Composable
 private fun AgentStreamBubble(role: String, text: String) {
-    if (role == "think") {
-        Text(
-            text = "思考 · " + text,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-        )
+    if (role == "think" || role == "reasoning") {
+        // 推理/思考过程流（content token 或 reasoning_content）：等宽字体 + 较暗色，实时滚动呈现
+        val label = if (role == "reasoning") "推理" else "思考"
+        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         return
     }
     val isAgent = role == "assistant"
@@ -563,10 +579,73 @@ private fun AgentStreamBubble(role: String, text: String) {
                     else MaterialTheme.colorScheme.onPrimaryContainer,
                     modifier = Modifier.padding(bottom = 2.dp),
                 )
-                Text(text = text, style = MaterialTheme.typography.bodySmall)
+                // assistant 输出原是 JSON 动作文本（含符号）：解析成可读描述，去掉裸 JSON
+                val displayText = if (isAgent) formatActionText(text) else text
+                Text(text = displayText, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
+}
+
+/** 把大脑输出的 JSON 动作文本转成可读描述，避免用户看到裸 JSON 符号。
+ *  解析失败（非 JSON）则原样返回（兼容模型偶尔输出的纯文本）。 */
+private fun formatActionText(raw: String): String {
+    val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    val cleaned = raw.trim().let {
+        // 剥 markdown 代码围栏
+        if (it.startsWith("```")) it.substringAfter("\n").substringBeforeLast("```").removePrefix("json").trim() else it
+    }
+    val start = cleaned.indexOf('{')
+    if (start < 0) return raw.trim()
+    // 取第一个完整 JSON 对象
+    var depth = 0; var inStr = false; var esc = false; var end = -1
+    for (i in start until cleaned.length) {
+        val c = cleaned[i]
+        when {
+            esc -> esc = false
+            inStr -> if (c == '\\' ) esc = true else if (c == '"') inStr = false
+            c == '"' -> inStr = true
+            c == '{' -> depth++
+            c == '}' -> { depth--; if (depth == 0) { end = i; break } }
+        }
+    }
+    if (end < 0) return raw.trim()
+    val obj = runCatching { json.parseToJsonElement(cleaned.substring(start, end + 1)).jsonObject }.getOrNull() ?: return raw.trim()
+    // 整段解析取值包 runCatching：?.jsonPrimitive 在值存在但非 primitive（嵌套对象/数组）时会抛异常，
+    // 模型输出畸形 JSON 时不应崩掉整个 AgentStreamBubble Composable，失败回退原文
+    return runCatching {
+        val action = obj["action"]?.jsonPrimitive?.contentOrNull ?: return raw.trim()
+        when (action) {
+            "generate" -> {
+                val tool = obj["tool"]?.jsonPrimitive?.contentOrNull?.removePrefix("GENERATE_")?.lowercase() ?: "内容"
+                val prompt = obj["prompt"]?.jsonPrimitive?.contentOrNull.orEmpty().ifBlank { "（无提示词）" }
+                val ref = obj["reference"]?.jsonPrimitive?.contentOrNull
+                val refCard = obj["reference_card"]?.jsonPrimitive?.contentOrNull
+                val refs = listOfNotNull(
+                    ref?.let { "引用本轮#$it" },
+                    refCard?.let { "引用卡$it" },
+                    obj["reference_folder"]?.jsonPrimitive?.contentOrNull?.let { "文件夹「$it」" },
+                ).joinToString("，")
+                "生成${tool}：${prompt.take(80)}${if (refs.isNotEmpty()) "\n参考：$refs" else ""}"
+            }
+            "finish" -> "完成：${obj["summary"]?.jsonPrimitive?.contentOrNull?.ifBlank { "本轮结束" } ?: "本轮结束"}"
+            "list_cards", "read_card", "list_assets", "list_runs", "read_trace", "read_skills", "layout_canvas" -> "查看：$action"
+            "update_card", "update_asset", "move_asset", "delete_card", "delete_asset", "delete_folder",
+            "create_folder", "memorize", "recall", "write_skill", "retire_skill", "link_cards",
+            "unlink_cards", "web_search", "fetch_url", "configure_resolution" -> {
+                val target = obj["card_id"]?.jsonPrimitive?.contentOrNull
+                    ?: obj["asset_id"]?.jsonPrimitive?.contentOrNull
+                    ?: obj["query"]?.jsonPrimitive?.contentOrNull
+                    ?: obj["url"]?.jsonPrimitive?.contentOrNull
+                    ?: obj["memory"]?.jsonPrimitive?.contentOrNull
+                    ?: obj["content"]?.jsonPrimitive?.contentOrNull
+                    ?: obj["model_name"]?.jsonPrimitive?.contentOrNull
+                    ?: ""
+                "$action${if (target.isNotBlank()) "：${target.take(40)}" else ""}"
+            }
+            else -> action
+        }
+    }.getOrNull() ?: raw.trim()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -574,60 +653,156 @@ private fun AgentStreamBubble(role: String, text: String) {
 private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
     val libraryAssets by vm.libraryAssets.collectAsState()
     var showAgentLibrary by remember { mutableStateOf(false) }
+    // 参数折叠：默认收起，聚焦对话；点「参数」展开模型/开关/参考
+    var showParams by remember { mutableStateOf(false) }
     // Agent 执行对话的滚动状态：新输出到达时跟随到底部
     val agentListState = rememberLazyListState()
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
+    // 全屏页面：对话占主体，参数/开关放输入框上方（可折叠），输入框固定底部
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding(),
+    ) {
+        // 顶部栏：返回 + 标题 + 进度/取消
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .imePadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = MaterialTheme.colorScheme.primary)
+            }
             Text(
                 text = "自主 Agent",
                 style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(bottom = 4.dp),
+                modifier = Modifier.weight(1f),
             )
-            Text(
-                text = "以自然语言描述目标，Agent 自动规划并调用 图片→视频→音频 等步骤完成。选中结果卡片或素材库参考仍有效。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
-            // Agent 执行进度
             vm.agentProgress?.let { (done, total) ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    LinearProgressIndicator(
-                        progress = { if (total == 0) 0f else done.toFloat() / total },
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = "Agent $done/$total 步",
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(horizontal = 8.dp),
-                    )
-                    TextButton(onClick = vm::cancelAgent) { Text("取消") }
-                }
-            }
-            // MadStory 分镜优化开关
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
-                Switch(
-                    checked = vm.cinematicEnabled,
-                    onCheckedChange = { vm.setCinematic(it) },
+                LinearProgressIndicator(
+                    progress = { if (total == 0) 0f else done.toFloat() / total },
+                    modifier = Modifier.width(80.dp),
                 )
                 Text(
-                    text = "镜头分镜优化（MadStory）",
+                    text = " $done/$total",
                     style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+                TextButton(onClick = vm::cancelAgent) { Text("取消") }
+            }
+        }
+        // 对话流：占满主体（weight 1f），无高度上限——参考主流 Agent 应用，对话是页面主角
+        if (vm.agentStream.isEmpty() && !vm.agentBusy) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "以自然语言描述目标，Agent 自动规划多步生成。\n例如：画一只赛博狐狸，再用它生成 10 秒夜景视频，最后配上温柔旁白。",
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 24.dp),
                 )
             }
-            // Agent 文本模型选择（规划大脑 & 对话模型）
-            if (vm.visibleAgentTextModels.isNotEmpty()) {
-                Column(modifier = Modifier.padding(bottom = 8.dp)) {
+        } else {
+            LazyColumn(
+                state = agentListState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(vertical = 8.dp),
+            ) {
+                items(vm.agentStream.size) { idx ->
+                    val (role, text) = vm.agentStream[idx]
+                    AgentStreamBubble(role = role, text = text)
+                }
+            }
+            // 新输出到达时平滑跟随到底部
+            LaunchedEffect(vm.agentStream.size) {
+                val count = agentListState.layoutInfo.totalItemsCount
+                if (count > 0) agentListState.animateScrollToItem(count - 1)
+            }
+        }
+        // 错误条（输入框上方）
+        vm.lastError?.let { err ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = err,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = vm::retry) { Text("重试") }
+                TextButton(onClick = vm::clearError) { Text("忽略") }
+            }
+        }
+        // 参数区（输入框上方，可折叠）：模型 / 开关 / 参考素材
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = { showParams = !showParams }) {
+                Text(if (showParams) "收起参数 ▲" else "参数 ▼")
+            }
+            if (vm.selectedReferenceCards.isNotEmpty() || vm.selectedReferenceAssets.isNotEmpty()) {
+                Text(
+                    text = "  参考 ${vm.selectedReferenceCards.size + vm.selectedReferenceAssets.size}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+            UploadButton(vm)
+            TextButton(onClick = { showAgentLibrary = !showAgentLibrary }) {
+                Text(if (showAgentLibrary) "收起库" else "素材库")
+            }
+        }
+        if (showParams) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 200.dp)
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                // MadStory 分镜优化开关
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
+                    Switch(
+                        checked = vm.cinematicEnabled,
+                        onCheckedChange = { vm.setCinematic(it) },
+                    )
+                    Text(
+                        text = "镜头分镜优化（MadStory）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // 推理开关：由用户判断模型是否支持 reasoning（如 DeepSeek-R1/o1），手动开启
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
+                    Switch(
+                        checked = vm.reasoningEnabled,
+                        onCheckedChange = { vm.setReasoning(it) },
+                    )
+                    Text(
+                        text = "模型推理（reasoning 模型开启，输出推理过程）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // Agent 文本模型选择（规划大脑 & 对话模型）
+                if (vm.visibleAgentTextModels.isNotEmpty()) {
                     Text(
                         text = "文本模型",
                         style = MaterialTheme.typography.labelSmall,
@@ -649,122 +824,62 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                     }
                 }
             }
-            // 参考素材 & 上传附件
-            if (vm.selectedReferenceCards.isNotEmpty() || vm.selectedReferenceAssets.isNotEmpty()) {
+        }
+        if (showAgentLibrary) {
+            if (libraryAssets.isEmpty()) {
                 Text(
-                    text = "已选参考：卡片 ${vm.selectedReferenceCards.size} · 素材 ${vm.selectedReferenceAssets.size}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                UploadButton(vm)
-                TextButton(onClick = { showAgentLibrary = !showAgentLibrary }) {
-                    Text(if (showAgentLibrary) "收起素材库" else "从素材库引用")
-                }
-            }
-            if (showAgentLibrary) {
-                if (libraryAssets.isEmpty()) {
-                    Text(
-                        text = "素材库为空，可点「上传附件」导入本地图片/视频",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 6.dp),
-                    )
-                } else {
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(bottom = 6.dp),
-                    ) {
-                        items(libraryAssets, key = { it.id }) { asset ->
-                            AssetRefChip(
-                                asset = asset,
-                                selected = asset.mediaPath != null &&
-                                    vm.selectedReferenceAssets.any { it.mediaPath == asset.mediaPath },
-                            ) { vm.toggleReferenceAsset(asset) }
-                        }
-                    }
-                }
-            }
-            // Agent 执行错误（sheet 内可见，避免被浮层盖住）
-            vm.lastError?.let { err ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = err,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = vm::retry) { Text("重试") }
-                    TextButton(onClick = vm::clearError) { Text("忽略") }
-                }
-            }
-            // Agent 实时对话：大脑输出/动作/观察按发生时间合并为单一流，新输出自动跟随到底部
-            if (vm.agentStream.isNotEmpty()) {
-                Text(
-                    text = "执行对话（实时）",
+                    text = "素材库为空，可点「上传附件」导入本地图片/视频",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
-                LazyColumn(
-                    state = agentListState,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 320.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+            } else {
+                LazyRow(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(vm.agentStream.size) { idx ->
-                        val (role, text) = vm.agentStream[idx]
-                        AgentStreamBubble(role = role, text = text)
+                    items(libraryAssets, key = { it.id }) { asset ->
+                        AssetRefChip(
+                            asset = asset,
+                            selected = asset.mediaPath != null &&
+                                vm.selectedReferenceAssets.any { it.mediaPath == asset.mediaPath },
+                        ) { vm.toggleReferenceAsset(asset) }
                     }
                 }
-                // 新输出到达时平滑跟随到底部，避免停留在历史位置被弹回顶部
-                LaunchedEffect(vm.agentStream.size) {
-                    val count = agentListState.layoutInfo.totalItemsCount
-                    if (count > 0) agentListState.animateScrollToItem(count - 1)
-                }
             }
-            // Agent 输入 + 执行
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                verticalAlignment = Alignment.Bottom,
+        }
+        // 输入框 + 发送（固定底部）
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            OutlinedTextField(
+                value = vm.agentInput,
+                onValueChange = vm::onAgentInputChange,
+                placeholder = { Text("描述你想要的创作…") },
+                modifier = Modifier.weight(1f),
+                minLines = 1,
+                maxLines = 4,
+                enabled = !vm.agentBusy,
+            )
+            val context = LocalContext.current
+            IconButton(
+                onClick = {
+                    if (vm.agentInput.isBlank() || vm.agentBusy) {
+                        Toast.makeText(context, if (vm.agentBusy) "Agent 正在执行" else "请输入内容", Toast.LENGTH_SHORT).show()
+                    } else {
+                        vm.sendAgent()
+                    }
+                },
+                modifier = Modifier.padding(start = 8.dp).size(56.dp),
             ) {
-                OutlinedTextField(
-                    value = vm.agentInput,
-                    onValueChange = vm::onAgentInputChange,
-                    placeholder = { Text("例如：画一只赛博狐狸，再用它生成 10 秒夜景视频，最后配上温柔的旁白…") },
-                    modifier = Modifier.weight(1f),
-                    minLines = 1,
-                    maxLines = 4,
-                    enabled = !vm.agentBusy,
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = "Agent 执行",
+                    tint = MaterialTheme.colorScheme.primary,
                 )
-                val context = LocalContext.current
-                IconButton(
-                    onClick = {
-                        if (vm.agentInput.isBlank() || vm.agentBusy) {
-                            Toast.makeText(context, if (vm.agentBusy) "Agent 正在执行" else "请输入内容", Toast.LENGTH_SHORT).show()
-                        } else {
-                            vm.sendAgent()
-                        }
-                    },
-                    modifier = Modifier.padding(start = 8.dp).size(56.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Agent 执行",
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
             }
         }
     }
@@ -1196,16 +1311,20 @@ private fun MediaPreview(
 ) {
     val file = card.mediaPath?.let { File(it) }?.takeIf { it.exists() }
         ?: card.previewPath?.let { File(it) }?.takeIf { it.exists() }
+    val scroll = rememberScrollState()
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = Color.Black.copy(alpha = 0.95f),
         ) {
             Column(
-                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp)
+                    .verticalScroll(scroll),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                // 顶部：标题 + 关闭
+                // 顶部：标题 + 增强标志 + 关闭
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1218,44 +1337,71 @@ private fun MediaPreview(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (card.promptEnhanced) {
+                        Text(
+                            text = "⚡增强提示词",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.padding(end = 8.dp),
+                        )
+                    }
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, contentDescription = "关闭", tint = Color.White)
                     }
                 }
-                // 预览区
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f, fill = false),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (file == null) {
-                        Text("文件不存在", color = Color.White)
-                    } else if (card.kind == MediaKind.VIDEO) {
-                        VideoPlayer(file = file)
-                    } else if (card.kind == MediaKind.IMAGE) {
-                        AsyncImage(
-                            model = file,
-                            contentDescription = card.title,
-                            modifier = Modifier.fillMaxWidth(),
-                            contentScale = ContentScale.Fit,
-                        )
-                    } else if (card.kind == MediaKind.TEXT) {
-                        Text(
-                            text = card.content.ifBlank { card.title },
-                            color = Color.White,
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(8.dp),
-                        )
-                    } else {
-                        Text(card.kind.name, color = Color.White)
+                // 预览区：图片放大 / 视频播放（音频无画面，仅展示提示词+下载）
+                if (file != null && card.kind == MediaKind.VIDEO) {
+                    VideoPlayer(file = file)
+                } else if (file != null && card.kind == MediaKind.IMAGE) {
+                    AsyncImage(
+                        model = file,
+                        contentDescription = card.title,
+                        modifier = Modifier.fillMaxWidth(),
+                        contentScale = ContentScale.Fit,
+                    )
+                } else if (file == null) {
+                    Text("文件不存在", color = Color.White, modifier = Modifier.padding(16.dp))
+                }
+                // 提交提示词展示区：让用户在预览时直接看到这张卡是按什么提示词生成的。
+                // TEXT 卡 content 是生成结果文本（非提交提示词），跳过此区避免语义错配
+                if (card.content.isNotBlank() && card.kind != MediaKind.TEXT) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.White.copy(alpha = 0.08f),
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "提交提示词",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (card.promptEnhanced) {
+                                    Text(
+                                        text = "⚡经 LLM 增强",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                    )
+                                }
+                            }
+                            Text(
+                                text = card.content,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
                     }
                 }
-                // 底部：下载按钮（仅图片/视频/音频有可下载文件时显示）
-                if (file != null && card.kind != MediaKind.TEXT) {
+                // 底部：下载按钮（图片/视频/音频有可下载文件时显示）
+                if (file != null) {
                     Button(
                         onClick = onDownload,
-                        modifier = Modifier.padding(top = 8.dp),
+                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
                     ) {
                         Text("下载到相册")
                     }

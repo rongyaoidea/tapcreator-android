@@ -260,6 +260,7 @@ class ChatViewModel @Inject constructor(
         val agentModelId: String? = null,
         val cinematic: Boolean = true,
         val promptOptimize: Boolean = false,
+        val reasoning: Boolean = false,
     )
 
     @Serializable
@@ -300,6 +301,7 @@ class ChatViewModel @Inject constructor(
         agentModelId = selectedAgentModelId,
         cinematic = cinematicEnabled,
         promptOptimize = promptOptimize,
+        reasoning = reasoningEnabled,
     )
 
     private suspend fun writeState(s: ConversationEditState) {
@@ -339,6 +341,8 @@ class ChatViewModel @Inject constructor(
         cinematicEnabled = s.cinematic
         // 创作提示词优化开关
         promptOptimize = s.promptOptimize
+        // 推理开关
+        reasoningEnabled = s.reasoning
     }
 
     override fun onCleared() {
@@ -355,6 +359,9 @@ class ChatViewModel @Inject constructor(
 
     /** MadStory 镜头分镜提示词优化开关 */
     var cinematicEnabled by mutableStateOf(true)
+
+    /** 推理开关：用户手动控制是否发 reasoning_effort（默认关闭，由用户判断模型是否支持） */
+    var reasoningEnabled by mutableStateOf(false)
 
     private var agentJob: Job? = null
 
@@ -444,6 +451,11 @@ class ChatViewModel @Inject constructor(
 
     fun setCinematic(enabled: Boolean) {
         cinematicEnabled = enabled
+        markStateChanged()
+    }
+
+    fun setReasoning(enabled: Boolean) {
+        reasoningEnabled = enabled
         markStateChanged()
     }
 
@@ -651,7 +663,8 @@ class ChatViewModel @Inject constructor(
                 runCatching { runService.optimizePrompt(t, prompt) }
                     .onSuccess { optPrompt ->
                         if (optPrompt.isNotBlank() && optPrompt != prompt) {
-                            lastRequestBase = lastRequestBase!!.copy(prompt = optPrompt)
+                            // 优化成功且内容变化：标记增强，落卡时写 promptEnhanced 供预览标识
+                            lastRequestBase = lastRequestBase!!.copy(prompt = optPrompt, promptEnhanced = true)
                         }
                     }
                     .onFailure { e -> toast("提示词优化失败，已使用原文：${e.message}") }
@@ -722,15 +735,26 @@ class ChatViewModel @Inject constructor(
                     cinematic = cinematicEnabled,
                     memoryEnabled = memEnabled,
                     style = style,
+                    reasoningEnabled = reasoningEnabled,
                     onProgress = { done, total -> agentProgress = done to total },
                     onEvent = { role, text -> agentStream = agentStream + (role to text); markStateChanged() },
                     onThinking = { token ->
-                        // 大脑实时 token：若尾部仍是 thinking 块则续写，否则开一段新 thinking，与动作/观察按时间交错
+                        // 大脑正文 token：若尾部仍是 thinking 块则续写，否则开一段新 thinking
                         val last = agentStream.lastOrNull()
                         agentStream = if (last != null && last.first == "think") {
                             agentStream.dropLast(1) + (last.first to (last.second + token))
                         } else {
                             agentStream + ("think" to token)
+                        }
+                        markStateChanged()
+                    },
+                    onReasoning = { token ->
+                        // 推理过程(reasoning_content)单独成流：标签「推理」，与思考流区分，实时滚动
+                        val last = agentStream.lastOrNull()
+                        agentStream = if (last != null && last.first == "reasoning") {
+                            agentStream.dropLast(1) + (last.first to (last.second + token))
+                        } else {
+                            agentStream + ("reasoning" to token)
                         }
                         markStateChanged()
                     },
@@ -776,6 +800,7 @@ class ChatViewModel @Inject constructor(
                     seconds = base.seconds,
                     referencedCardIds = base.referencedAssetIds,
                     referencedAssetPaths = base.referencedAssetPaths,
+                    promptEnhanced = base.promptEnhanced,
                 )
             } catch (ce: CancellationException) {
                 throw ce

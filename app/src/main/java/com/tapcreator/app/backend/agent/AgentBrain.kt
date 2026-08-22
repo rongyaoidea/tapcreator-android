@@ -108,6 +108,10 @@ $styleBlock
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
         onEvent: (role: String, text: String) -> Unit = { _, _ -> },
         onThinking: (String) -> Unit = {},
+        // 推理过程流：reasoning_content 单独回调，UI 显示为「推理」流，与思考(content token)流区分
+        onReasoning: (String) -> Unit = {},
+        // 用户在面板手动开启的推理开关：透传给 gateway.agentChatStream 决定是否发 reasoning_effort
+        reasoningEnabled: Boolean = false,
     ): List<String> {
         val modelEntity = modelId?.let { id -> router.models(MediaKind.TEXT).firstOrNull { it.id == id } }
             ?: router.defaultModel(MediaKind.TEXT)
@@ -213,7 +217,7 @@ $styleBlock
             }
             val raw = try {
                 // P2-7：SSE 流式读取大脑输出，逐 token 推到 UI；上游不支持 tools/流式时回退
-                gateway.agentChatStream(channel, secrets, model, messages, toolsJson, onThinking)
+                gateway.agentChatStream(channel, secrets, model, messages, toolsJson, reasoningEnabled, onThinking, onReasoning)
             } catch (e: TapcreatorException) {
                 // 上游不支持 tools 或流式（如 4xx）：回退到非流式纯文本模式再试一次；仍失败则回灌
                 try {
@@ -244,7 +248,7 @@ $styleBlock
                 "generate" -> {
                     val kind = kindOfTool(action.tool)
                     if (kind == null) {
-                        trace += ChatMessage("user", "[工具错误] 未知工具：${action.tool ?: "空"}。可选 GENERATE_TEXT/GENERATE_IMAGE/GENERATE_VIDEO/GENERATE_AUDIO。")
+                        trace += ChatMessage("user", "[工具错误] generate 动作缺少 tool 字段或值无法识别（收到：${action.tool ?: "（空）"}）。请补全 tool 字段，取值必须为 GENERATE_TEXT / GENERATE_IMAGE / GENERATE_VIDEO / GENERATE_AUDIO 之一。")
                         continue
                     }
                     if (action.prompt.isNullOrBlank()) {

@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -419,14 +420,6 @@ private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Bool
             val file = card.mediaPath?.let { File(it) }
                 ?: card.previewPath?.let { File(it) }
             when {
-                card.kind == MediaKind.TEXT -> Text(
-                    text = card.content.ifBlank { card.title },
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(8.dp),
-                    textAlign = TextAlign.Center,
-                )
                 isDraft -> {
                     // 提交后 status 升级为 RUNNING 的「生成中」占位卡：显示加载动画，避免静默消失
                     when (card.status) {
@@ -443,6 +436,13 @@ private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Bool
                                 text = "生成中…",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            // indeterminate 进度条：增强等待态的"进行中"感知
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .width(100.dp)
+                                    .padding(top = 2.dp),
+                                color = kindColor(card.kind),
                             )
                         }
                         RunStatus.FAILED -> Column(
@@ -506,7 +506,6 @@ private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Bool
                     MediaKind.IMAGE -> "图片卡"
                     MediaKind.VIDEO -> "视频卡"
                     MediaKind.AUDIO -> "音频卡"
-                    MediaKind.TEXT -> "文本卡"
                     else -> "卡片"
                 } },
                 style = MaterialTheme.typography.labelSmall,
@@ -515,6 +514,14 @@ private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Bool
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
+            // 增强提示词角标：非 draft 成品卡且 promptEnhanced 时显示
+            if (!isDraft && card.promptEnhanced) {
+                Text(
+                    text = "⚡增强",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
             if (isDraft) {
                 Text(
                     text = when (card.status) {

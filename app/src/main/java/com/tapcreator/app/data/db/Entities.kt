@@ -154,6 +154,8 @@ data class CardEntity(
     val y: Float = 0f,
     /** 仍被其他卡片引用时删除只会置 1 隐藏于面板，数据与文件保留；彻底无引用时才物理删除 */
     val deleted: Boolean = false,
+    /** 提示词是否经 LLM 增强（promptOptimize 开关且优化成功）；成品卡预览时据此标识「增强提示词」 */
+    val promptEnhanced: Boolean = false,
 )
 
 /** 卡片自由连接——关系图的边 */

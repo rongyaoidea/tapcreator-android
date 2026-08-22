@@ -218,7 +218,7 @@ class RunService @Inject constructor(
                     if (cur.status != RunStatus.RUNNING) db.agentRunDao().update(cur.copy(status = RunStatus.RUNNING))
                 }
                 val result = gateway.create(channel, secrets, model, enrichedPref)
-                persistOneCard(run, modelEntity, i, result, cardSeq, referencedCardIds)
+                persistOneCard(run, modelEntity, i, result, cardSeq, referencedCardIds, enrichedPref.promptEnhanced)
                 cardSeq++
                 completed++
             }
@@ -328,7 +328,7 @@ class RunService @Inject constructor(
             val cardSeq = db.cardDao().maxSequence(run.conversationId) + 1
             // 拼接降级时在卡片内容标注，让用户知情（结果已保留，无需重试整轮）
             val note = if (concatDegraded) "${run.prompt}\n\n[分段拼接失败，仅保留单段]" else run.prompt
-            persistVideoCard(run, modelEntity, asset.id, cardSeq, referencedCardIds, mergedFile.absolutePath, note)
+            persistVideoCard(run, modelEntity, asset.id, cardSeq, referencedCardIds, mergedFile.absolutePath, note, basePref.promptEnhanced)
             db.agentRunDao().byId(run.id)?.let {
                 db.agentRunDao().update(it.copy(status = RunStatus.COMPLETED, updatedAt = System.currentTimeMillis()))
             }
@@ -409,6 +409,7 @@ class RunService @Inject constructor(
         referencedCardIds: List<String>,
         mediaPath: String,
         content: String = run.prompt,
+        promptEnhanced: Boolean = false,
     ) {
         // 文本模型为产出卡起名：避免视频卡标题退化成模型 id；失败回退模型名
         val videoTitle = suggestTitle(run.prompt, model.name, 0)
@@ -425,6 +426,7 @@ class RunService @Inject constructor(
             status = RunStatus.COMPLETED,
             x = 0f,
             y = 0f,
+            promptEnhanced = promptEnhanced,
         )
         db.cardDao().insert(card)
         referencedCardIds.distinct().forEach { refId ->
@@ -597,6 +599,7 @@ class RunService @Inject constructor(
         result: UpstreamResult,
         seq: Int,
         referencedCardIds: List<String>,
+        promptEnhanced: Boolean,
     ) {
         // 文本模型为产出卡起名：避免卡片标题退化成模型 id；失败回退模型名
         val cardTitle = suggestTitle(run.prompt, model.name, index)
@@ -611,12 +614,14 @@ class RunService @Inject constructor(
             sequence = seq,
             kind = run.kind,
             title = cardTitle,
-            content = result.text.orEmpty(),
+            // 成品卡 content 存提交提示词（供预览展示）；文本生成才存结果文本
+            content = if (run.kind == MediaKind.TEXT) result.text.orEmpty() else run.prompt,
             previewPath = asset?.previewPath,
             mediaPath = asset?.mediaPath,
             status = RunStatus.COMPLETED,
             x = 0f,
             y = 0f,
+            promptEnhanced = promptEnhanced,
         )
         db.cardDao().insert(card)
 
@@ -682,6 +687,7 @@ class RunService @Inject constructor(
         seconds: Int?,
         referencedCardIds: List<String>,
         referencedAssetPaths: List<String>,
+        promptEnhanced: Boolean = false,
     ): AgentRunEntity = launch(
         token,
         RunRequest(
@@ -696,6 +702,7 @@ class RunService @Inject constructor(
             seconds = seconds,
             referencedAssetIds = referencedCardIds,
             referencedAssetPaths = referencedAssetPaths,
+            promptEnhanced = promptEnhanced,
         )
     )
 
@@ -711,6 +718,7 @@ class RunService @Inject constructor(
         motion = request.motion,
         cfgScale = request.cfgScale,
         prompt = request.prompt,
+        promptEnhanced = request.promptEnhanced,
     )
 
     private fun titleFor(modelName: String, index: Int): String =
