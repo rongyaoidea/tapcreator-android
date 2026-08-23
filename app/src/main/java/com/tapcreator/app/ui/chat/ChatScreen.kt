@@ -83,6 +83,7 @@ import com.tapcreator.app.data.db.AssetEntity
 import com.tapcreator.app.data.db.CardEntity
 import com.tapcreator.app.data.db.MessageEntity
 import com.tapcreator.app.data.model.MediaKind
+import com.tapcreator.app.data.model.ThinkingLevel
 import com.tapcreator.app.ui.theme.Dimens
 import java.io.File
 import kotlinx.serialization.json.Json
@@ -792,8 +793,8 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                 // 推理开关：由用户判断模型是否支持 reasoning（如 DeepSeek-R1/o1），手动开启
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
                     Switch(
-                        checked = vm.reasoningEnabled,
-                        onCheckedChange = { vm.setReasoning(it) },
+                        checked = vm.thinkingLevel == ThinkingLevel.MEDIUM || vm.thinkingLevel == ThinkingLevel.HIGH,
+                        onCheckedChange = { vm.updateThinkingLevel(if (it) ThinkingLevel.MEDIUM else ThinkingLevel.NONE) },
                     )
                     Text(
                         text = "模型推理（reasoning 模型开启，输出推理过程）",
@@ -1311,7 +1312,8 @@ private fun MediaPreview(
 ) {
     val file = card.mediaPath?.let { File(it) }?.takeIf { it.exists() }
         ?: card.previewPath?.let { File(it) }?.takeIf { it.exists() }
-    val scroll = rememberScrollState()
+    // 提示词区可折叠：默认收起只显一行，点击展开全文，减少视觉噪音
+    var promptExpanded by remember { mutableStateOf(false) }
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(12.dp),
@@ -1320,9 +1322,7 @@ private fun MediaPreview(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(8.dp)
-                    .verticalScroll(scroll),
-                horizontalAlignment = Alignment.CenterHorizontally,
+                    .padding(8.dp),
             ) {
                 // 顶部：标题 + 增强标志 + 关闭
                 Row(
@@ -1339,7 +1339,7 @@ private fun MediaPreview(
                     )
                     if (card.promptEnhanced) {
                         Text(
-                            text = "⚡增强提示词",
+                            text = "增强提示词",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.tertiary,
                             modifier = Modifier.padding(end = 8.dp),
@@ -1349,31 +1349,38 @@ private fun MediaPreview(
                         Icon(Icons.Default.Close, contentDescription = "关闭", tint = Color.White)
                     }
                 }
-                // 预览区：图片放大 / 视频播放（音频无画面，仅展示提示词+下载）
-                if (file != null && card.kind == MediaKind.VIDEO) {
-                    VideoPlayer(file = file)
-                } else if (file != null && card.kind == MediaKind.IMAGE) {
-                    AsyncImage(
-                        model = file,
-                        contentDescription = card.title,
-                        modifier = Modifier.fillMaxWidth(),
-                        contentScale = ContentScale.Fit,
-                    )
-                } else if (file == null) {
-                    Text("文件不存在", color = Color.White, modifier = Modifier.padding(16.dp))
+                // 预览区：占主体，图片/视频自适应铺满
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = true),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    when {
+                        file != null && card.kind == MediaKind.VIDEO -> VideoPlayer(file = file)
+                        file != null && card.kind == MediaKind.IMAGE -> AsyncImage(
+                            model = file,
+                            contentDescription = card.title,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit,
+                        )
+                        file == null -> Text("文件不存在", color = Color.White, modifier = Modifier.padding(16.dp))
+                    }
                 }
-                // 提交提示词展示区：让用户在预览时直接看到这张卡是按什么提示词生成的。
-                // TEXT 卡 content 是生成结果文本（非提交提示词），跳过此区避免语义错配
+                // 提交提示词区：可折叠，默认收起只显标题行
                 if (card.content.isNotBlank() && card.kind != MediaKind.TEXT) {
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 8.dp),
+                            .padding(top = 4.dp),
                         shape = RoundedCornerShape(8.dp),
                         color = Color.White.copy(alpha = 0.08f),
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 Text(
                                     text = "提交提示词",
                                     style = MaterialTheme.typography.labelMedium,
@@ -1382,26 +1389,37 @@ private fun MediaPreview(
                                 )
                                 if (card.promptEnhanced) {
                                     Text(
-                                        text = "⚡经 LLM 增强",
+                                        text = "经 LLM 增强",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.tertiary,
+                                        modifier = Modifier.padding(end = 8.dp),
                                     )
                                 }
+                                TextButton(onClick = { promptExpanded = !promptExpanded }) {
+                                    Text(if (promptExpanded) "收起" else "展开", color = MaterialTheme.colorScheme.tertiary)
+                                }
                             }
+                            // 收起时只显一行预览，展开显全文
                             Text(
                                 text = card.content,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.White,
-                                modifier = Modifier.padding(top = 4.dp),
+                                maxLines = if (promptExpanded) Int.MAX_VALUE else 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .padding(top = 4.dp)
+                                    .then(if (promptExpanded) Modifier else Modifier.fillMaxWidth()),
                             )
                         }
                     }
                 }
-                // 底部：下载按钮（图片/视频/音频有可下载文件时显示）
+                // 底部：下载按钮
                 if (file != null) {
                     Button(
                         onClick = onDownload,
-                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp),
                     ) {
                         Text("下载到相册")
                     }

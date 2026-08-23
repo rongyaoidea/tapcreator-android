@@ -64,6 +64,8 @@ data class AgentRunEntity(
     val error: String? = null,
     val createdAt: Long,
     val updatedAt: Long,
+    /** 断点续传检查点：记录已完成的段文件路径(JSON 数组)与进度，中断恢复时从断点续，不丢已生成段 */
+    val checkpoint: String? = null,
 )
 
 /** 子任务：对应需要轮询的上游任务 */

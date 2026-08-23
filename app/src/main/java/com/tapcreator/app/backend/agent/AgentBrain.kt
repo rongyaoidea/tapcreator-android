@@ -24,6 +24,9 @@ import com.tapcreator.app.data.model.MediaKind
 import com.tapcreator.app.data.model.ModelOption
 import com.tapcreator.app.data.model.RunRequest
 import com.tapcreator.app.data.model.TapcreatorException
+import com.tapcreator.app.data.model.ChatResponse
+import com.tapcreator.app.data.model.ThinkingLevel
+import com.tapcreator.app.data.model.ToolCall
 import java.io.File
 import java.net.URLEncoder
 import java.util.UUID
@@ -32,6 +35,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.decodeFromString
@@ -110,8 +114,8 @@ $styleBlock
         onThinking: (String) -> Unit = {},
         // 推理过程流：reasoning_content 单独回调，UI 显示为「推理」流，与思考(content token)流区分
         onReasoning: (String) -> Unit = {},
-        // 用户在面板手动开启的推理开关：透传给 gateway.agentChatStream 决定是否发 reasoning_effort
-        reasoningEnabled: Boolean = false,
+        // 推理深度级别（用户面板手动选择）：透传给 gateway.agentChatStream
+        thinkingLevel: ThinkingLevel = ThinkingLevel.NONE,
     ): List<String> {
         val modelEntity = modelId?.let { id -> router.models(MediaKind.TEXT).firstOrNull { it.id == id } }
             ?: router.defaultModel(MediaKind.TEXT)
@@ -200,6 +204,10 @@ $styleBlock
         }
         while (turn < maxTurns && !finished) {
             turn++
+            // P2 上下文压缩：trace 超过阈值时压缩旧消息，保持上下文有界
+            if (trace.size > MEMORY_WINDOW * 2) {
+                compactMessages(conversationId, trace)
+            }
             if (System.currentTimeMillis() - startedAt > MAX_RUN_MS) {
                 emitTrace()
                 writeAssistantSummary(conversationId, "Agent 执行超过时间预算，已终止本轮（本轮产出 ${outputCards.size} 张卡片）。可继续再发指令。")
@@ -215,20 +223,69 @@ $styleBlock
                 buildContext(conversationId, memoryEnabled)?.takeIf { it.isNotBlank() }?.let { add(ChatMessage("system", it)) }
                 addAll(trace.takeLast(MEMORY_WINDOW))
             }
-            val raw = try {
+            val response = try {
                 // P2-7：SSE 流式读取大脑输出，逐 token 推到 UI；上游不支持 tools/流式时回退
-                gateway.agentChatStream(channel, secrets, model, messages, toolsJson, reasoningEnabled, onThinking, onReasoning)
+                gateway.agentChatStream(channel, secrets, model, messages, toolsJson, thinkingLevel, onThinking, onReasoning)
             } catch (e: TapcreatorException) {
-                // 上游不支持 tools 或流式（如 4xx）：回退到非流式纯文本模式再试一次；仍失败则回灌
+                // 429 限流：不立即回退非流式（会双倍限流），退避后重试流式；连续限流则终止
+                if (e.message?.contains("429") == true || e.message?.contains("rpm", ignoreCase = true) == true ||
+                    e.message?.contains("exhausted", ignoreCase = true) == true
+                ) {
+                    if (recoveries >= ACTION_RECOVERY_BUDGET) {
+                        emitTrace()
+                        writeAssistantSummary(conversationId, "上游限流（RPM 耗尽），已终止本轮。请稍后重试或更换模型。")
+                        summaryWritten = true
+                        break
+                    }
+                    recoveries++
+                    trace += ChatMessage("user", "[限流] 上游返回 429（${e.message}）。等待 5 秒后重试。")
+                    emitTrace()
+                    delay(5000L)
+                    continue
+                }
+                // 非 429 的 4xx：回退到非流式纯文本模式再试一次；仍失败则回灌
                 try {
-                    gateway.agentChat(channel, secrets, model, messages, null)
+                    val fallbackText = gateway.agentChat(channel, secrets, model, messages, null)
+                    ChatResponse(text = fallbackText)
                 } catch (e2: TapcreatorException) {
                     trace += ChatMessage("user", "[工具异常] 大脑调用失败：${e2.message}。请重新输出一个动作。")
                     continue
                 }
             }
-            val actionText = extractJsonObject(stripFence(raw)) ?: raw.trim()
-            val action = parseAction(actionText)
+            // 解析 action：优先 tool_calls 结构化输出，其次文本 JSON 解析兜底
+            var action: AgentAction? = null
+            val actionText: String
+            if (response.toolCalls.isNotEmpty()) {
+                val tc = response.toolCalls.first()
+                actionText = buildString {
+                    append("{\"action\":\"${tc.name}\"")
+                    tc.args.forEach { (k, v) ->
+                        val vStr = when {
+                            v is kotlinx.serialization.json.JsonPrimitive -> when {
+                                v.isString -> "\"${v.content}\""
+                                else -> v.content
+                            }
+                            v is kotlinx.serialization.json.JsonNull -> "null"
+                            else -> v.toString()
+                        }
+                        append(",\"$k\":$vStr")
+                    }
+                    append("}")
+                }
+                action = parseAction(actionText)
+                if (action == null) {
+                    trace += ChatMessage("user", "[工具错误] 工具调用「${tc.name}」参数无法解析，跳过。")
+                    continue
+                }
+                // 模型输出文本（如有）作 assistant 消息记录
+                if (response.text.isNotBlank()) {
+                    trace += ChatMessage("assistant", response.text)
+                }
+            } else {
+                val raw = response.text
+                actionText = extractJsonObject(stripFence(raw)) ?: raw.trim()
+                action = parseAction(actionText)
+            }
 
             if (action == null) {
                 recoveries++
@@ -1088,6 +1145,23 @@ $styleBlock
         return null
     }
 
+    /** P2 上下文压缩：当 trace 过长时，将最早的消息合并为一条摘要，减少 token 消耗 */
+    private fun compactMessages(conversationId: String, trace: MutableList<ChatMessage>) {
+        val head = trace.take(MEMORY_WINDOW)
+        val tail = trace.drop(MEMORY_WINDOW)
+        if (head.size < 2) return
+        // 把最早的 user/assistant 交替对压缩为一条摘要
+        val summary = head.joinToString(" | ") { m ->
+            when (m.role) {
+                "user" -> "用户：${m.content.take(80)}"
+                "assistant" -> "助手：${m.content.take(80)}"
+                else -> ""
+            }
+        }
+        trace.clear()
+        trace.add(ChatMessage("system", "[上下文压缩] 以下为早期对话摘要：$summary"))
+        trace.addAll(tail)
+    }
     /** P3 自进化：本轮执行完毕后，让文本大脑做一次「诉求 vs 产出 vs 轨迹」复盘，
      *  把可复用的启发式沉淀为技能落库（仅提炼候选；成败赢率不由模型自评拍板，改由用户反馈驱动）。
      *  全程容错，复盘失败不影响主流程返回。 */

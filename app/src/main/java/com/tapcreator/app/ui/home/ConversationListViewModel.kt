@@ -31,6 +31,8 @@ class ConversationListViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val tokenFlow = MutableStateFlow<String?>(null)
+    // 创建会话防重入：避免动画/快速连点导致一次点击创建多个空会话
+    private val isCreating = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** 是否尚无可用的 API Key（没有任何渠道已配置密钥）→ 首页据此引导去设置页 */
     val needsSetup: StateFlow<Boolean> =
@@ -57,9 +59,15 @@ class ConversationListViewModel @Inject constructor(
     }
 
     fun createConversation(onCreated: (String) -> Unit) {
+        // 防重入：上一次创建尚未完成时直接忽略，杜绝动画期间/快速连点产生多个空会话
+        if (!isCreating.compareAndSet(false, true)) return
         viewModelScope.launch {
-            val t = tokenFlow.value ?: return@launch
-            onCreated(runs.createConversation(t).id)
+            try {
+                val t = tokenFlow.value ?: return@launch
+                onCreated(runs.createConversation(t).id)
+            } finally {
+                isCreating.set(false)
+            }
         }
     }
 

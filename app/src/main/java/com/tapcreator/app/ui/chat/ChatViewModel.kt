@@ -21,8 +21,10 @@ import com.tapcreator.app.data.db.ConversationStateEntity
 import com.tapcreator.app.data.db.MessageEntity
 import com.tapcreator.app.data.db.ModelOptionEntity
 import com.tapcreator.app.data.model.MediaKind
+import com.tapcreator.app.data.model.GenerationPreferences
 import com.tapcreator.app.data.model.RunRequest
 import com.tapcreator.app.data.model.RunStatus
+import com.tapcreator.app.data.model.ThinkingLevel
 import com.tapcreator.app.data.prefs.SettingsStore
 import java.io.File
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -260,7 +262,7 @@ class ChatViewModel @Inject constructor(
         val agentModelId: String? = null,
         val cinematic: Boolean = true,
         val promptOptimize: Boolean = false,
-        val reasoning: Boolean = false,
+        val reasoning: ThinkingLevel = ThinkingLevel.NONE,
     )
 
     @Serializable
@@ -301,7 +303,7 @@ class ChatViewModel @Inject constructor(
         agentModelId = selectedAgentModelId,
         cinematic = cinematicEnabled,
         promptOptimize = promptOptimize,
-        reasoning = reasoningEnabled,
+        reasoning = thinkingLevel,
     )
 
     private suspend fun writeState(s: ConversationEditState) {
@@ -341,8 +343,8 @@ class ChatViewModel @Inject constructor(
         cinematicEnabled = s.cinematic
         // 创作提示词优化开关
         promptOptimize = s.promptOptimize
-        // 推理开关
-        reasoningEnabled = s.reasoning
+        // 推理深度级别
+        thinkingLevel = s.reasoning
     }
 
     override fun onCleared() {
@@ -360,8 +362,8 @@ class ChatViewModel @Inject constructor(
     /** MadStory 镜头分镜提示词优化开关 */
     var cinematicEnabled by mutableStateOf(true)
 
-    /** 推理开关：用户手动控制是否发 reasoning_effort（默认关闭，由用户判断模型是否支持） */
-    var reasoningEnabled by mutableStateOf(false)
+    /** 推理深度级别：用户手动选择（NONE/LOW/MEDIUM/HIGH），默认 NONE（关闭） */
+    var thinkingLevel by mutableStateOf(ThinkingLevel.NONE)
 
     private var agentJob: Job? = null
 
@@ -454,8 +456,8 @@ class ChatViewModel @Inject constructor(
         markStateChanged()
     }
 
-    fun setReasoning(enabled: Boolean) {
-        reasoningEnabled = enabled
+    fun updateThinkingLevel(level: ThinkingLevel) {
+        thinkingLevel = level
         markStateChanged()
     }
 
@@ -735,7 +737,7 @@ class ChatViewModel @Inject constructor(
                     cinematic = cinematicEnabled,
                     memoryEnabled = memEnabled,
                     style = style,
-                    reasoningEnabled = reasoningEnabled,
+                    thinkingLevel = thinkingLevel,
                     onProgress = { done, total -> agentProgress = done to total },
                     onEvent = { role, text -> agentStream = agentStream + (role to text); markStateChanged() },
                     onThinking = { token ->
@@ -812,6 +814,31 @@ class ChatViewModel @Inject constructor(
 
     var lastError by mutableStateOf<String?>(null)
         private set
+
+    /** 恢复中断的视频 run（断点续传）：从 checkpoint 复用已生成段，续生成剩余段 */
+    fun resumeVideoRun(runId: String) {
+        val t = token ?: return
+        viewModelScope.launch {
+            val run = db.agentRunDao().byId(runId) ?: return@launch
+            if (run.status != RunStatus.PAUSED) return@launch
+            try {
+                // 重置为 RUNNING 后重新走 launchVideo，会从 checkpoint 恢复段文件
+                db.agentRunDao().update(run.copy(status = RunStatus.RUNNING, error = null, updatedAt = System.currentTimeMillis()))
+                val modelEntity = router.resolve(run.modelIds.split(",").filter { it.isNotBlank() }, run.kind).firstOrNull() ?: return@launch
+                val pref = GenerationPreferences(kind = run.kind, prompt = run.prompt, modelIds = listOf(modelEntity.id))
+                // 重新解析渠道+密钥走 launchVideo 的续传路径
+                runService.launch(t, RunRequest(
+                    conversationId = run.conversationId,
+                    prompt = run.prompt,
+                    kind = run.kind,
+                    modelIds = listOf(modelEntity.id),
+                    seconds = null,
+                ))
+            } catch (e: Exception) {
+                lastError = e.message ?: "恢复失败"
+            }
+        }
+    }
 
     fun clearError() {
         lastError = null

@@ -9,6 +9,9 @@ import com.tapcreator.app.data.model.ModelOption
 import com.tapcreator.app.data.model.Protocol
 import com.tapcreator.app.data.model.UpstreamResult
 import com.tapcreator.app.data.model.TapcreatorException
+import com.tapcreator.app.data.model.ThinkingLevel
+import com.tapcreator.app.data.model.ToolCall
+import com.tapcreator.app.data.model.ChatResponse
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
@@ -322,14 +325,13 @@ class ProviderGateway @Inject constructor(
         model: ModelOption,
         messages: List<ChatMessage>,
         toolsJson: kotlinx.serialization.json.JsonArray? = null,
-        // 用户在面板手动开关：开启时发 reasoning_effort，模型据此输出推理过程；
-        // 关闭时不下发该参数（非 reasoning 模型传此会被 OpenAI 官方拒 400）
-        reasoningEnabled: Boolean = false,
+        // 推理深度级别（用户面板手动选择）：NONE 不发 reasoning_effort（非 reasoning 模型传此会被拒 400）
+        thinkingLevel: ThinkingLevel = ThinkingLevel.NONE,
         onToken: (String) -> Unit = {},
         // 推理过程单独流：DeepSeek-R1 / o1 等模型在 SSE delta.reasoning_content 里返回推理，
         // 与正文 content 分开，单独回调供 UI 显示「推理」流（不混入动作解析）
         onReasoning: (String) -> Unit = {},
-    ): String {
+    ): ChatResponse {
         val base = normalizeBase(channel.baseUrl)
         val body = buildJsonObject {
             put("model", model.name)
@@ -342,9 +344,9 @@ class ProviderGateway @Inject constructor(
             put("temperature", 0.5)
             put("max_tokens", 1500)
             put("stream", true)
-            // 用户手动开启推理：发 reasoning_effort；关闭时不发（非 reasoning 模型传此会被拒 400）
-            if (reasoningEnabled) {
-                put("reasoning_effort", "medium")
+            // 用户手动选择推理深度：NONE 不发送，LOW/MEDIUM/HIGH 透传
+            if (thinkingLevel != ThinkingLevel.NONE) {
+                put("reasoning_effort", thinkingLevel.effort)
             }
             if (toolsJson != null) {
                 put("tools", toolsJson)
@@ -367,7 +369,7 @@ class ProviderGateway @Inject constructor(
                         } else {
                             val out = parseSse(resp, onToken, onReasoning)
                             // 成功但切流无任何内容/工具调用：属空结果，不应回落下一个端点重发
-                            if (out == null) throw TapcreatorException("Agent 大脑未返回任何输出", "UPSTREAM_EMPTY")
+                            if (out == null || out.isEmpty) throw TapcreatorException("Agent 大脑未返回任何输出", "UPSTREAM_EMPTY")
                             out
                         }
                     }
@@ -431,11 +433,13 @@ class ProviderGateway @Inject constructor(
             ?: throw TapcreatorException("识图校验无返回", "UPSTREAM_EMPTY")
     }
 
-    private fun parseSse(resp: Response, onToken: (String) -> Unit, onReasoning: (String) -> Unit = {}): String? {
+    private fun parseSse(resp: Response, onToken: (String) -> Unit, onReasoning: (String) -> Unit = {}): ChatResponse? {
         val source = resp.body?.source() ?: throw TapcreatorException("流式响应无正文", "UPSTREAM_EMPTY")
         val content = StringBuilder()
+        val reasoningText = StringBuilder()
         var toolName: String? = null
         val toolArgs = StringBuilder()
+        var toolId: String? = null
         // SSE 事件帧缓冲：单条事件可被拆成多行 "data:"，以空行作为事件结束标志后合并解析
         val frame = StringBuilder()
         var done = false
@@ -444,7 +448,7 @@ class ProviderGateway @Inject constructor(
             if (line.isEmpty()) {
                 // 一帧结束：解析缓冲内容
                 if (frame.isEmpty()) continue
-                done = parseFrame(frame.toString(), content, onToken, onReasoning, toolNameRef = { toolName = it }, toolArgs)
+                done = parseFrame(frame.toString(), content, onToken, onReasoning, toolNameRef = { toolName = it }, toolArgs, toolIdRef = { toolId = it })
                 frame.setLength(0)
                 continue
             }
@@ -458,20 +462,27 @@ class ProviderGateway @Inject constructor(
         }
         // 处理最后一帧（可能没有尾随空行）
         if (!done && frame.isNotEmpty()) {
-            parseFrame(frame.toString(), content, onToken, onReasoning, { toolName = it }, toolArgs)
+            parseFrame(frame.toString(), content, onToken, onReasoning, { toolName = it }, toolArgs, { toolId = it })
             frame.setLength(0)
         }
+        // 返回结构化 ChatResponse：工具调用直接以 ToolCall 对象返回，文本内容分离
         if (toolName != null) {
             val argsObj = runCatching { json.parseToJsonElement(toolArgs.toString()).jsonObject }.getOrNull() ?: emptyJsonObject()
-            val combined = buildJsonObject {
-                put("action", toolName)
-                // 跳过保留键，避免上游 arguments 里的 "action"/"tool" 覆盖真实动作名
-                argsObj.forEach { (k, v) -> if (k != "action" && k != "tool") put(k, v) }
-            }
-            return combined.toString()
+            val call = ToolCall(
+                id = toolId ?: "tc_${System.nanoTime()}",
+                name = toolName!!,
+                args = argsObj,
+            )
+            return ChatResponse(
+                text = content.toString(),
+                toolCalls = listOf(call),
+                reasoning = reasoningText.toString(),
+            )
         }
         val full = content.toString()
-        return if (full.isBlank()) null else full
+        val reasoningFull = reasoningText.toString()
+        if (full.isBlank() && reasoningFull.isBlank()) return null
+        return ChatResponse(text = full, reasoning = reasoningFull)
     }
 
     /** 解析单个 SSE 帧（可能含多行 data 需整体 JSON 解析）。返回 true 表示收到 [DONE] 应结束。 */
@@ -482,6 +493,7 @@ class ProviderGateway @Inject constructor(
         onReasoning: (String) -> Unit,
         toolNameRef: (String) -> Unit,
         toolArgs: StringBuilder,
+        toolIdRef: (String) -> Unit = {},
     ): Boolean {
         val data = frame.trim()
         if (data.isEmpty()) return false
@@ -502,6 +514,8 @@ class ProviderGateway @Inject constructor(
             val fn = tc.jsonObject.get("function")?.jsonObject
             val nm = fn?.get("name")?.jsonPrimitive?.contentOrNull
             val arg = fn?.get("arguments")?.jsonPrimitive?.contentOrNull
+            val id = tc.jsonObject["id"]?.jsonPrimitive?.contentOrNull
+            if (!id.isNullOrEmpty()) toolIdRef(id)
             if (!nm.isNullOrEmpty()) toolNameRef(nm)
             if (!arg.isNullOrEmpty()) {
                 toolArgs.append(arg)

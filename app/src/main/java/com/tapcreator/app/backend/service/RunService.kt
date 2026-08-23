@@ -6,6 +6,10 @@ import com.tapcreator.app.backend.model.ModelRouter
 import com.tapcreator.app.backend.providers.ProviderGateway
 import com.tapcreator.app.data.db.AgentRunEntity
 import androidx.room.withTransaction
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import com.tapcreator.app.data.db.AppDatabase
 import com.tapcreator.app.data.db.CardEntity
 import com.tapcreator.app.data.db.CardLinkEntity
@@ -67,14 +71,16 @@ class RunService @Inject constructor(
 
     /**
      * 启动自愈：进程被系统杀掉后，上一进程遗留的 PLANNING/RUNNING/PAUSED in-flight run
-     * 永远不会有收尾，这里统一标记为 FAILED，避免界面永久"生成中"。仅在同进程启动时调用一次。
+     * 永远不会有收尾。有 checkpoint 的视频 run 标 PAUSED（可断点续传），无 checkpoint 的标 FAILED。
+     * 仅在同进程启动时调用一次。
      */
     suspend fun reconcileStaleRuns() {
         db.agentRunDao().staleActive().forEach { r ->
+            val hasCheckpoint = !r.checkpoint.isNullOrBlank()
             db.agentRunDao().update(
                 r.copy(
-                    status = RunStatus.FAILED,
-                    error = "生成被中断，请重试",
+                    status = if (hasCheckpoint) RunStatus.PAUSED else RunStatus.FAILED,
+                    error = if (hasCheckpoint) "生成被中断，已保留进度，可恢复续传" else "生成被中断，请重试",
                     updatedAt = System.currentTimeMillis(),
                 )
             )
@@ -274,12 +280,27 @@ class RunService @Inject constructor(
         val isH3 = channel.protocol == Protocol.MINIMAX_H3
         val durations = segmentDurations(target, isH3)
         val tmpParts = mutableListOf<File>()
+        // 断点续传：恢复上次中断时已生成的段文件（checkpoint 记录路径列表 JSON）
+        val json = Json { ignoreUnknownKeys = true }
+        val checkpointParts: MutableList<String> = run.checkpoint?.let { cp ->
+            runCatching {
+                json.parseToJsonElement(cp).jsonArray.map { it.jsonPrimitive.content }
+            }.getOrNull()?.toMutableList()
+        } ?: mutableListOf()
+        // 复用已持久化的段文件（仍存在于磁盘的）
+        checkpointParts.mapNotNull { p -> File(p).takeIf { it.exists() } }.forEach { tmpParts += it }
+        val startIdx = tmpParts.size // 已生成段数，从这里续
         // 长视频分段生成期间启动前台服务保活，避免后台被系统回收中断续写
         GenerationForegroundService.start(appContext, "视频生成中（${target}s）")
         try {
             var continueFrame: ByteArray? = null
             var referenceVideoUrl: String? = null
-            for ((idx, dur) in durations.withIndex()) {
+            // 恢复续帧：非 H3 需要上一段尾帧，从已恢复的最后一段提取
+            if (tmpParts.isNotEmpty() && !isH3) {
+                continueFrame = LastFrameExtractor.from(tmpParts.last().absolutePath)
+            }
+            // H3 续写需要上一段的 CDN URL，但中断后 CDN URL 未持久化——只能从头重生成（无 checkpoint 时不进此分支）
+            for ((idx, dur) in durations.withIndex().drop(startIdx)) {
                 if (cancelFlags[run.id]?.get() == true) {
                     db.agentRunDao().byId(run.id)?.let {
                         db.agentRunDao().update(it.copy(status = RunStatus.CANCELLED, error = "已取消", updatedAt = System.currentTimeMillis()))
@@ -306,6 +327,14 @@ class RunService @Inject constructor(
                     continueFrame = LastFrameExtractor.from(f.absolutePath)
                 }
                 tmpParts += f
+                // 写 checkpoint：记录已生成段文件路径，中断后可从这里续传
+                val paths = tmpParts.map { it.absolutePath }
+                val checkpointJson = kotlinx.serialization.json.buildJsonArray {
+                    paths.forEach { p -> add(kotlinx.serialization.json.JsonPrimitive(p)) }
+                }.toString()
+                db.agentRunDao().byId(run.id)?.let {
+                    db.agentRunDao().update(it.copy(checkpoint = checkpointJson, updatedAt = System.currentTimeMillis()))
+                }
             }
             // 拼接成最终文件；拼接失败（各段编码参数不一致等）时降级保留最大那段，而非整轮失败
             val mergedFile = newFinalFile()
@@ -330,22 +359,21 @@ class RunService @Inject constructor(
             val note = if (concatDegraded) "${run.prompt}\n\n[分段拼接失败，仅保留单段]" else run.prompt
             persistVideoCard(run, modelEntity, asset.id, cardSeq, referencedCardIds, mergedFile.absolutePath, note, basePref.promptEnhanced)
             db.agentRunDao().byId(run.id)?.let {
-                db.agentRunDao().update(it.copy(status = RunStatus.COMPLETED, updatedAt = System.currentTimeMillis()))
+                db.agentRunDao().update(it.copy(status = RunStatus.COMPLETED, checkpoint = null, updatedAt = System.currentTimeMillis()))
             }
         } catch (e: CancellationException) {
             // 用户取消：协程已取消，须在 NonCancellable 下继续提交状态
             withContext(NonCancellable) {
-                cleanup(tmpParts)
+                // 保留段文件与 checkpoint，用户可恢复续传
                 db.agentRunDao().byId(run.id)?.let {
-                    db.agentRunDao().update(it.copy(status = RunStatus.CANCELLED, error = "已取消", updatedAt = System.currentTimeMillis()))
+                    db.agentRunDao().update(it.copy(status = RunStatus.PAUSED, error = "已取消，可恢复续传", updatedAt = System.currentTimeMillis()))
                 }
             }
         } catch (e: TapcreatorException) {
-            cleanup(tmpParts)
+            // 保留段文件与 checkpoint，不 cleanup——中断后可断点续传
             finishVideoWith(run.id, e.message ?: "视频生成失败")
             throw e
         } catch (e: Exception) {
-            cleanup(tmpParts)
             finishVideoWith(run.id, e.message ?: e.javaClass.simpleName)
             throw e
         } finally {

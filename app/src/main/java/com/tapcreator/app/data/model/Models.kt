@@ -105,6 +105,32 @@ data class UpstreamResult(
 /** Agent 对话消息（OpenAI 兼容 chats：system/user/assistant） */
 data class ChatMessage(val role: String, val content: String)
 
+/** Agent 工具调用（结构化输出，替代文本 JSON 解析） */
+data class ToolCall(
+    val id: String,
+    val name: String,
+    val args: kotlinx.serialization.json.JsonObject = kotlinx.serialization.json.buildJsonObject { },
+)
+
+/** Agent 大脑响应（agentChatStream 返回：正文 + 工具调用分离，不再依赖文本解析） */
+data class ChatResponse(
+    val text: String = "",
+    val toolCalls: List<ToolCall> = emptyList(),
+    val reasoning: String = "",
+    val usage: Pair<Int, Int>? = null, // (input tokens, output tokens)
+) {
+    val hasToolCalls: Boolean get() = toolCalls.isNotEmpty()
+    val isEmpty: Boolean get() = text.isBlank() && toolCalls.isEmpty() && reasoning.isBlank()
+}
+
+/** 推理深度级别（透传 reasoning_effort） */
+enum class ThinkingLevel(val effort: String) {
+    NONE("none"),
+    LOW("low"),
+    MEDIUM("medium"),
+    HIGH("high"),
+}
+
 /** 结果卡片（替代画布的节点） */
 @Serializable
 data class ResultCard(

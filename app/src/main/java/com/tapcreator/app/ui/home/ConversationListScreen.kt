@@ -16,9 +16,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -88,7 +96,8 @@ fun ConversationListScreen(
                     }
                 }
                 Button(onClick = { onNewChat("") }) {
-                    Text("＋ 新建项目", style = MaterialTheme.typography.titleSmall)
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Text(" 新建项目", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 4.dp))
                 }
             }
 
@@ -151,7 +160,8 @@ fun ConversationListScreen(
                     .padding(horizontal = Dimens.PagePadding),
                 contentPadding = PaddingValues(vertical = 12.dp),
             ) {
-                Text("＋ 新建项目", style = MaterialTheme.typography.titleSmall)
+                Icon(Icons.Default.Add, contentDescription = null)
+                Text(" 新建项目", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 4.dp))
             }
         }
         } // AnimatedVisibility
@@ -172,7 +182,7 @@ private fun ConversationRow(conv: ConversationEntity, onClick: () -> Unit) {
             maxLines = 1,
         )
         Text(
-            text = timeLabel(conv.updatedAt),
+            text = "最后编辑 " + timeLabel(conv.updatedAt),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 2.dp),
@@ -186,35 +196,55 @@ private fun HomeBottomBar(
     onLibrary: () -> Unit,
     onProfile: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Dimens.PagePadding, vertical = 12.dp),
-        horizontalArrangement = Arrangement.End,
-        verticalAlignment = Alignment.CenterVertically,
+    // 配色对齐 app 主题：暖纸底/深灰底 + 橙色选中态，不用 Material3 默认紫色
+    NavigationBar(
+        containerColor = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            NavEntry("素材库", onLibrary)
-            NavEntry("设置", onSettings)
-            NavEntry("我的", onProfile)
-        }
+        NavigationBarItem(
+            selected = false,
+            onClick = onLibrary,
+            icon = { Icon(Icons.Default.Home, contentDescription = "素材库", tint = MaterialTheme.colorScheme.primary) },
+            label = { Text("素材库", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+            colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+            ),
+        )
+        NavigationBarItem(
+            selected = false,
+            onClick = onSettings,
+            icon = { Icon(Icons.Default.Settings, contentDescription = "设置", tint = MaterialTheme.colorScheme.primary) },
+            label = { Text("设置", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+            colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+            ),
+        )
+        NavigationBarItem(
+            selected = false,
+            onClick = onProfile,
+            icon = { Icon(Icons.Default.AccountCircle, contentDescription = "我的", tint = MaterialTheme.colorScheme.primary) },
+            label = { Text("我的", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+            colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+            ),
+        )
     }
 }
 
-/** 首页底部的模式入口：加大点击热区与文字，避免误触与拥挤 */
-@Composable
-private fun NavEntry(label: String, onClick: () -> Unit) {
-    TextButton(
-        onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-    ) {
-        Text(label, style = MaterialTheme.typography.titleMedium)
-    }
-}
-
+/** 最后编辑时间的友好显示：今天/昨天/MM-dd/yyyy */
 private fun timeLabel(epoch: Long): String {
-    val d = java.util.Date(epoch)
-    val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
-    return fmt.format(d)
+    val now = java.util.Calendar.getInstance()
+    val target = java.util.Calendar.getInstance().apply { timeInMillis = epoch }
+    val dayFmt = java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault())
+    val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+    val isSameDay = now.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
+        now.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
+    val isYesterday = now.get(java.util.Calendar.DAY_OF_YEAR) - target.get(java.util.Calendar.DAY_OF_YEAR) == 1 &&
+        now.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR)
+    return when {
+        isSameDay -> "今天 ${timeFmt.format(target.time)}"
+        isYesterday -> "昨天 ${timeFmt.format(target.time)}"
+        now.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) -> dayFmt.format(target.time)
+        else -> java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(target.time)
+    }
 }
