@@ -94,14 +94,6 @@ object AgentToolRegistry {
         Tool("list_runs", "回顾本会话此前的 Agent 执行批次（run_id/轮数/时长），供自我复盘。", emptyList()),
         Tool("read_trace", "读取某次执行批次 run_id 的完整思考/动作/观察轨迹，用于复盘失败或复制成功经验。",
             listOf(Param("run_id", "string", "list_runs 得到的执行批次 id", true))),
-        Tool("write_skill", "把可复用启发式沉淀为技能入库（自进化）。low 风险直接生效；high 风险（涉及删除/改写用户预期）进入待审批。",
-            listOf(
-                Param("content", "string", "一句可执行规则（≤200字）", true),
-                Param("category", "string", "分类：generate/flow/reference/folder/toolfix/layout"),
-                Param("risk", "string", "low 或 high，默认 low"),
-            )),
-        Tool("read_skills", "查看当前已生效的技能库与待审批技能，了解已沉淀的经验。", emptyList()),
-        Tool("retire_skill", "撤销某条已沉淀技能。", listOf(Param("skill_id", "string", "技能 id", true))),
         Tool("link_cards", "在两卡片间建立引用关系边（主动梳理关系链/引用）。",
             listOf(
                 Param("from_card_id", "string", "源卡片 id", true),
@@ -115,6 +107,21 @@ object AgentToolRegistry {
                 Param("role", "string", "reference/parent，默认 reference"),
             )),
         Tool("layout_canvas", "重新整理本会话所有节点在画布上的网格布局（坐标持久化）。", emptyList()),
+        Tool("list_skills", "列出所有可用的设计 Skill（内置预设 + 已安装的第三方 Skill），供选择风格。", emptyList()),
+        Tool("apply_skill", "应用设计 Skill 到后续 generate：注入风格指导 prompt。photo 类需在 generate 时引用原图。",
+            listOf(
+                Param("skill_id", "string", "Skill id（list_skills 获取）", true),
+            )),
+        Tool("skill_creator", "创建/安装一个第三方设计 Skill。用户可自定义风格指导 prompt，安装后 Agent 可 apply_skill 使用。",
+            listOf(
+                Param("name", "string", "Skill 名称（英文短词，如 vintage-film）", true),
+                Param("category", "string", "分类：photo（需原图）/ poster（氛围海报）", true),
+                Param("prompt_guide", "string", "风格指导 prompt（apply 时注入 generate 的提示词）", true),
+                Param("description", "string", "简短描述"),
+                Param("suggested_ratios", "string", "建议比例，逗号分隔（如 16:9,1:1）"),
+            )),
+        Tool("uninstall_skill", "删除一个用户安装的第三方 Skill（内置预设不可删）。",
+            listOf(Param("skill_id", "string", "要删除的 Skill id", true))),
         Tool("finish", "结束本轮并把结果汇报给用户。", listOf(Param("summary", "string", "给用户的收尾文本"))),
     )
 

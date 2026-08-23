@@ -66,20 +66,26 @@ data class AgentAction(
     val cfgScale: Float? = null,
     /** memorize 内容 / recall 关键字 */
     val memory: String? = null,
-    /** write_skill 要沉淀的技能分类：generate/flow/reference/folder/toolfix/layout */
-    val category: String? = null,
-    /** write_skill 的风险分级：low/high，默认 low */
-    val risk: String? = null,
     /** read_trace 目标执行批次 id（list_runs 返回） */
     val run_id: String? = null,
-    /** retire_skill 目标技能 id */
-    val skill_id: String? = null,
     /** link_cards/unlink_cards 源卡片 id */
     val from_card_id: String? = null,
     /** link_cards/unlink_cards 目标卡片 id */
     val to_card_id: String? = null,
     /** link_cards/unlink_cards 关系角色：reference/parent */
     val role: String? = null,
+    /** apply_skill / uninstall_skill 的 skill id */
+    val skill_id: String? = null,
+    /** skill_creator 的名称 */
+    val name: String? = null,
+    /** skill_creator 的分类：photo/poster */
+    val category: String? = null,
+    /** skill_creator 的风格指导 prompt */
+    val prompt_guide: String? = null,
+    /** skill_creator 的描述 */
+    val description: String? = null,
+    /** skill_creator 的建议比例 */
+    val suggested_ratios: String? = null,
     /** finish 时给用户的收尾文本 */
     val summary: String? = null,
 )

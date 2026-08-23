@@ -659,7 +659,6 @@ class ChatViewModel @Inject constructor(
             }
             // 自进化：Agent 不在执行中时，若本消息是对上一条 Agent 产出的评价（满意/重做）则归因赢率。
             // Agent 仍执行时不消费，避免把「进行中批次」当作已完成产出误判。
-            if (!agentBusy) runCatching { brain.recordUserFeedback(conversationId, prompt) }
             // 提示词优化：开启时先用默认文本模型润色，失败则回退原文继续生成
             if (opt) {
                 runCatching { runService.optimizePrompt(t, prompt) }
@@ -723,7 +722,6 @@ class ChatViewModel @Inject constructor(
         agentJob = viewModelScope.launch {
             try {
                 // 自进化：本条 Agent 指令若是对上一条产出的评价（满意/重做），先把情感归因到上一批注入技能
-                runCatching { brain.recordUserFeedback(conversationId, prompt) }
                 // 读取用户偏好：记忆系统开关 + 个人风格偏好（注入 Agent 系统提示）
                 val memEnabled = settings.agentMemoryEnabledValue()
                 val style = settings.agentStyleValue().trim()

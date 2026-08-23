@@ -24,6 +24,12 @@ class TapcreatorApp : Application() {
     @Inject
     lateinit var runService: RunService
 
+    @Inject
+    lateinit var sandbox: com.tapcreator.app.backend.sandbox.PRootSandbox
+
+    @Inject
+    lateinit var skillRegistry: com.tapcreator.app.backend.skill.SkillRegistry
+
     override fun onCreate() {
         super.onCreate()
         installCrashLogger()
@@ -32,9 +38,13 @@ class TapcreatorApp : Application() {
             runCatching {
                 kotlinx.coroutines.runBlocking {
                     channels.seedDefaults()
-                    // 自动发现：为已存在但分辨率空缺的模型补全调研到的档位（幂等，不覆盖手动设置）
                     channels.autoFillAllResolutions()
                     runService.reconcileStaleRuns()
+                    // 加载已安装的第三方设计 Skill
+                    skillRegistry.init()
+                    // 后台预热沙箱：解压 rootfs + 启动 PRoot + 安装 ffmpeg/curl/python3
+                    // 首次约 30-60 秒，不阻塞首帧；沙箱就绪后 Agent 的搜索/拼接工具可用
+                    sandbox.ensureReady()
                 }
             }
             Handler(Looper.getMainLooper()).post {}
@@ -60,14 +70,33 @@ class TapcreatorApp : Application() {
 
     private fun writeCrashLog(body: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, "tapcreator-crash.log")
-                put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            // 先查已有文件，存在则追加内容；不存在则新建
+            val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val projection = arrayOf(MediaStore.Downloads._ID)
+            val selection = "${MediaStore.Downloads.DISPLAY_NAME} = ?"
+            val selectionArgs = arrayOf("tapcreator-crash.log")
+            var existingUri: android.net.Uri? = null
+            contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(0)
+                    existingUri = android.net.Uri.withAppendedPath(collection, id.toString())
+                }
             }
-            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: return
-            contentResolver.openOutputStream(uri)?.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val uri = existingUri ?: run {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, "tapcreator-crash.log")
+                    put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val newUri = contentResolver.insert(collection, values) ?: return
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                contentResolver.update(newUri, values, null, null)
+                newUri
+            }
+            // 追加写入（覆盖已有内容会导致历史丢失）
+            contentResolver.openOutputStream(uri, "wa")?.use { it.write(body.toByteArray(Charsets.UTF_8)) }
         } else {
             File(filesDir, "crash.log").appendText(body)
         }

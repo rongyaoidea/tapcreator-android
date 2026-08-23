@@ -27,6 +27,7 @@ import com.tapcreator.app.data.model.TaskStatus
 import com.tapcreator.app.data.model.UpstreamResult
 import com.tapcreator.app.data.model.TapcreatorException
 import com.tapcreator.app.backend.video.LastFrameExtractor
+import com.tapcreator.app.backend.video.FfmpegConcatenator
 import com.tapcreator.app.backend.video.Mp4Concatenator
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -59,6 +60,7 @@ class RunService @Inject constructor(
     private val gateway: ProviderGateway,
     private val media: MediaStore,
     private val http: okhttp3.OkHttpClient,
+    private val ffmpegConcatenator: FfmpegConcatenator,
     @ApplicationContext private val appContext: Context,
 ) {
 
@@ -336,16 +338,21 @@ class RunService @Inject constructor(
                     db.agentRunDao().update(it.copy(checkpoint = checkpointJson, updatedAt = System.currentTimeMillis()))
                 }
             }
-            // 拼接成最终文件；拼接失败（各段编码参数不一致等）时降级保留最大那段，而非整轮失败
+            // 拼接成最终文件；优先用 ffmpeg（容忍编码差异），失败回退 MediaMuxer，仍失败降级保留最大段
             val mergedFile = newFinalFile()
             var concatDegraded = false
             if (tmpParts.size > 1) {
-                val ok = Mp4Concatenator.concat(tmpParts, mergedFile)
-                if (!ok || !mergedFile.exists()) {
-                    // 降级：拼接失败，取文件最大的一段作为结果，避免用户重试整轮（已生成的分段不丢）
-                    tmpParts.maxByOrNull { runCatching { it.length() }.getOrDefault(0L) }
-                        ?.let { it.copyTo(mergedFile, overwrite = true) }
-                    concatDegraded = true
+                // 策略 1：ffmpeg 拼接（concat demuxer 无损 → re-encode 容忍差异）
+                val ffmpegOk = runCatching { ffmpegConcatenator.concat(tmpParts, mergedFile) }.getOrDefault(false)
+                if (!ffmpegOk || !mergedFile.exists() || mergedFile.length() == 0L) {
+                    // 策略 2：回退 MediaMuxer（纯 Android API，不依赖沙箱）
+                    val muxerOk = Mp4Concatenator.concat(tmpParts, mergedFile)
+                    if (!muxerOk || !mergedFile.exists()) {
+                        // 降级：两种拼接都失败，取文件最大的一段作为结果
+                        tmpParts.maxByOrNull { runCatching { it.length() }.getOrDefault(0L) }
+                            ?.let { it.copyTo(mergedFile, overwrite = true) }
+                        concatDegraded = true
+                    }
                 }
             } else {
                 tmpParts.firstOrNull()?.let { it.copyTo(mergedFile, overwrite = true) }

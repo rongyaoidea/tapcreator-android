@@ -24,6 +24,9 @@ class SettingsStore(private val context: Context) {
         val seeded = booleanPreferencesKey("defaults_seeded")
         val agentMemoryEnabled = booleanPreferencesKey("agent_memory_enabled")
         val agentStyle = stringPreferencesKey("agent_style")
+        val installedSkills = stringPreferencesKey("installed_skills")
+        val searchApiKey = stringPreferencesKey("search_api_key")
+        val searchApiUrl = stringPreferencesKey("search_api_url")
     }
 
     /** 默认渠道/模型是否已种子化（仅首次启动种子化一次，避免用户删除后重启又恢复） */
@@ -100,4 +103,23 @@ class SettingsStore(private val context: Context) {
     }
 
     suspend fun agentStyleValue(): String = context.dataStore.data.first()[Keys.agentStyle] ?: ""
+
+    /** 用户安装的第三方设计 Skill（JSON 数组，空=未安装） */
+    suspend fun installedSkillsJson(): String =
+        context.dataStore.data.first()[Keys.installedSkills] ?: ""
+
+    suspend fun saveInstalledSkillsJson(json: String) {
+        context.dataStore.edit { it[Keys.installedSkills] = json }
+    }
+
+    /** 搜索 API 配置（可选上游搜索，替代 DuckDuckGo） */
+    suspend fun searchApiKey(): String? = context.dataStore.data.first()[Keys.searchApiKey]
+    suspend fun searchApiUrl(): String? = context.dataStore.data.first()[Keys.searchApiUrl]
+
+    suspend fun saveSearchApi(key: String, url: String) {
+        context.dataStore.edit {
+            it[Keys.searchApiKey] = key
+            it[Keys.searchApiUrl] = url
+        }
+    }
 }

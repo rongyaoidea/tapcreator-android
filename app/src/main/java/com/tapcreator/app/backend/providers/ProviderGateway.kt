@@ -275,6 +275,7 @@ class ProviderGateway @Inject constructor(
         model: ModelOption,
         messages: List<ChatMessage>,
         toolsJson: kotlinx.serialization.json.JsonArray? = null,
+        maxTokens: Int = 4096,
     ): String {
         val arr = buildJsonArray {
             messages.forEach { m ->
@@ -285,7 +286,7 @@ class ProviderGateway @Inject constructor(
             put("model", model.name)
             put("messages", arr)
             put("temperature", 0.5)
-            put("max_tokens", 1500)
+            put("max_tokens", maxTokens)
             if (toolsJson != null) {
                 put("tools", toolsJson)
                 put("tool_choice", "auto")
@@ -327,6 +328,7 @@ class ProviderGateway @Inject constructor(
         toolsJson: kotlinx.serialization.json.JsonArray? = null,
         // 推理深度级别（用户面板手动选择）：NONE 不发 reasoning_effort（非 reasoning 模型传此会被拒 400）
         thinkingLevel: ThinkingLevel = ThinkingLevel.NONE,
+        maxTokens: Int = 4096,
         onToken: (String) -> Unit = {},
         // 推理过程单独流：DeepSeek-R1 / o1 等模型在 SSE delta.reasoning_content 里返回推理，
         // 与正文 content 分开，单独回调供 UI 显示「推理」流（不混入动作解析）
@@ -342,7 +344,7 @@ class ProviderGateway @Inject constructor(
                 },
             )
             put("temperature", 0.5)
-            put("max_tokens", 1500)
+            put("max_tokens", maxTokens)
             put("stream", true)
             // 用户手动选择推理深度：NONE 不发送，LOW/MEDIUM/HIGH 透传
             if (thinkingLevel != ThinkingLevel.NONE) {
@@ -367,7 +369,15 @@ class ProviderGateway @Inject constructor(
                             if (resp.code != 404) throw TapcreatorException(upstreamError(resp, text, url), "UPSTREAM_HTTP")
                             null
                         } else {
-                            val out = parseSse(resp, onToken, onReasoning)
+                            // 上游可能不支持 SSE（国内聚合商常直接返回普通 JSON）：
+                            // 按 Content-Type 分流。非 text/event-stream 时整体读 JSON 解析，
+                            // 并把 content 通过 onToken 回调，让 UI 思考流实时可见。
+                            val ct = resp.header("Content-Type").orEmpty()
+                            val out = if (!ct.contains("text/event-stream", ignoreCase = true)) {
+                                parseJsonStreamResponse(resp, onToken, onReasoning)
+                            } else {
+                                parseSse(resp, onToken, onReasoning)
+                            }
                             // 成功但切流无任何内容/工具调用：属空结果，不应回落下一个端点重发
                             if (out == null || out.isEmpty) throw TapcreatorException("Agent 大脑未返回任何输出", "UPSTREAM_EMPTY")
                             out
@@ -431,6 +441,41 @@ class ProviderGateway @Inject constructor(
         return resp.jsonObject["choices"]?.jsonArray
             ?.firstOrNull()?.jsonObject?.get("message")?.jsonObject?.get("content")?.jsonPrimitive?.contentOrNull
             ?: throw TapcreatorException("识图校验无返回", "UPSTREAM_EMPTY")
+    }
+
+    /**
+     * 非 SSE 降级解析：上游不支持 stream 时直接返回普通 chat completion JSON。
+     * 把 content 通过 onToken 回调（让 UI 思考流可见），解析 tool_calls，
+     * 返回与 parseSse 相同结构的 ChatResponse。
+     */
+    private fun parseJsonStreamResponse(resp: Response, onToken: (String) -> Unit, onReasoning: (String) -> Unit): ChatResponse? {
+        val text = resp.body?.string().orEmpty()
+        if (text.isBlank()) return null
+        val root = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return null
+        val message = root["choices"]?.jsonArray?.firstOrNull()?.jsonObject?.get("message")?.jsonObject ?: return null
+        val content = message["content"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        if (content.isNotEmpty()) onToken(content)
+        // 非流式响应里推理过程可能在 message.reasoning_content（部分兼容实现）
+        val reasoning = message["reasoning_content"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        if (reasoning.isNotEmpty()) onReasoning(reasoning)
+        val toolCalls = message["tool_calls"]?.takeIf { it !is JsonNull }
+        if (toolCalls is JsonElement && toolCalls.jsonArray.isNotEmpty()) {
+            val fn = toolCalls.jsonArray.firstOrNull()?.jsonObject?.get("function")?.jsonObject
+            val name = fn?.get("name")?.jsonPrimitive?.contentOrNull
+            if (name != null) {
+                val argsObj = runCatching {
+                    json.parseToJsonElement(fn.get("arguments")?.jsonPrimitive?.contentOrNull ?: "{}").jsonObject
+                }.getOrNull() ?: emptyJsonObject()
+                val id = toolCalls.jsonArray.firstOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
+                return ChatResponse(
+                    text = content,
+                    toolCalls = listOf(ToolCall(id = id ?: "tc_${System.nanoTime()}", name = name, args = argsObj)),
+                    reasoning = reasoning,
+                )
+            }
+        }
+        if (content.isBlank() && reasoning.isBlank()) return null
+        return ChatResponse(text = content, reasoning = reasoning)
     }
 
     private fun parseSse(resp: Response, onToken: (String) -> Unit, onReasoning: (String) -> Unit = {}): ChatResponse? {
@@ -665,13 +710,15 @@ class ProviderGateway @Inject constructor(
             val builder = Request.Builder().url(url).post(payload)
             if (secrets.apiKey.isNotBlank()) builder.header("Authorization", "Bearer ${secrets.apiKey}")
             val result = client.newCall(builder.build()).execute().use { resp ->
-                val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
+                    val text = resp.body?.string().orEmpty()
                     lastHttp = resp.code to text
                     if (resp.code != 404) throw TapcreatorException(upstreamError(resp, text, url), "UPSTREAM_HTTP")
                     null
-                } else if (text.isEmpty()) throw TapcreatorException("上游未返回音频内容：$url", "UPSTREAM_EMPTY")
-                else text.toByteArray(Charsets.UTF_8) // 说明：音频端点正常不应走此二进制分支误判，此处仅兜底
+                } else {
+                    // 二进制音频端点：直接读字节，避免 string() 的 UTF-8 往返解码损坏 mp3 数据
+                    resp.body?.bytes() ?: throw TapcreatorException("上游未返回音频内容：$url", "UPSTREAM_EMPTY")
+                }
             }
             if (result != null) return result
         }
