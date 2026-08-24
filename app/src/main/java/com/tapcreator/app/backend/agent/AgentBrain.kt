@@ -141,9 +141,6 @@ $styleBlock
 
 
         var turn = 0
-        // P0：reflexion——模型 finish 后可自检数轮，复盘产出是否达成，可再修正再收尾
-        var reflexions = 0
-        val REFLEXION_TURNS = 2
         // P0：结构化工具调用 schema（供文本大脑）；上游不支持时由调用处回退纯文本
         val toolsJson = AgentToolRegistry.toFunctionSchemas()
         // 上游是否支持结构化 function calling：首次默认 true，收到 400 后标记 false 切纯文本 JSON 动作模式
@@ -349,12 +346,6 @@ $styleBlock
                     else -> "${e.javaClass.simpleName}：${e.message ?: "未知错误"}"
                 }
                 st.trace += ChatMessage("user", "[循环异常] $friendlyMsg 请改正后用一个动作继续，或 finish。")
-            }
-            // P0：reflexion——模型主动 finish 且尚未自检够时，补一轮「自检」让其复盘；预算/超时等强制终止不复活
-            if (st.finished && !st.forcedStop && reflexions < REFLEXION_TURNS && turn < maxTurns) {
-                st.trace += ChatMessage("user", "[自检] 请对照用户诉求「${ctx.userPrompt}」与已有产出复盘：若已充分达成，请输出 finish（附最终小结）；若存在明确缺陷且你已有清晰下一步，请输出那个修正动作（勿重复做同一件事）。")
-                st.finished = false
-                reflexions++
             }
         }
         emitTrace()
@@ -1407,9 +1398,6 @@ $styleBlock
         trace.add(ChatMessage("system", "[上下文压缩] 以下为早期对话摘要：$summary"))
         trace.addAll(tail)
     }
-    /** P3 自进化：本轮执行完毕后，让文本大脑做一次「诉求 vs 产出 vs 轨迹」复盘，
-     *  把可复用的启发式沉淀为技能落库（仅提炼候选；成败赢率不由模型自评拍板，改由用户反馈驱动）。
-     *  全程容错，复盘失败不影响主流程返回。 */
     /** 毫秒时间戳 → "HH:mm"（list_runs 展示用） */
     private fun timeHhMm(ts: Long): String {
         val c = java.util.Calendar.getInstance().apply { timeInMillis = ts }

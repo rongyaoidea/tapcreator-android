@@ -456,10 +456,8 @@ class ChatViewModel @Inject constructor(
         markStateChanged()
     }
 
-    fun updateThinkingLevel(level: ThinkingLevel) {
-        thinkingLevel = level
-        markStateChanged()
-    }
+    // 推理深度级别已移除——始终使用 AUTO
+    // fun updateThinkingLevel(level: ThinkingLevel) { ... }
 
     /** 从系统文件选择器导入本地图片/视频：登记为素材库资源，并自动加入参考素材 */
     fun importLocalMedia(uri: Uri) {
@@ -767,26 +765,7 @@ class ChatViewModel @Inject constructor(
                     thinkingLevel = thinkingLevel,
                     onProgress = { done, total -> agentProgress = done to total },
                     onEvent = { role, text -> agentStream = agentStream + (role to text); markStateChanged() },
-                    onThinking = { token ->
-                        // 大脑正文 token：若尾部仍是 thinking 块则续写，否则开一段新 thinking
-                        val last = agentStream.lastOrNull()
-                        agentStream = if (last != null && last.first == "think") {
-                            agentStream.dropLast(1) + (last.first to (last.second + token))
-                        } else {
-                            agentStream + ("think" to token)
-                        }
-                        markStateChanged()
-                    },
-                    onReasoning = { token ->
-                        // 推理过程(reasoning_content)单独成流：标签「推理」，与思考流区分，实时滚动
-                        val last = agentStream.lastOrNull()
-                        agentStream = if (last != null && last.first == "reasoning") {
-                            agentStream.dropLast(1) + (last.first to (last.second + token))
-                        } else {
-                            agentStream + ("reasoning" to token)
-                        }
-                        markStateChanged()
-                    },
+                    // 不传 onThinking/onReasoning，不在 UI 显示思考/推理过程
                 )
             } catch (ce: CancellationException) {
                 throw ce

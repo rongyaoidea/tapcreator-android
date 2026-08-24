@@ -83,7 +83,6 @@ import com.tapcreator.app.data.db.AssetEntity
 import com.tapcreator.app.data.db.CardEntity
 import com.tapcreator.app.data.db.MessageEntity
 import com.tapcreator.app.data.model.MediaKind
-import com.tapcreator.app.data.model.ThinkingLevel
 import com.tapcreator.app.ui.theme.Dimens
 import java.io.File
 import kotlinx.serialization.json.Json
@@ -542,32 +541,30 @@ private fun androidx.compose.foundation.layout.RowScope.BottomActionButton(text:
 }
 
 // Agent 流式输出的单个对话气泡：think=大脑实时输出（弱化灰字）、assistant=Agent 动作/思考（左）、user=观察/反馈（右）
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AgentStreamBubble(role: String, text: String) {
     if (role == "think" || role == "reasoning") {
-        // 推理/思考过程流（content token 或 reasoning_content）：等宽字体 + 较暗色，实时滚动呈现
-        val label = if (role == "reasoning") "推理" else "思考"
-        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        // 推理/思考过程流已移除——不再显示
         return
     }
     val isAgent = role == "assistant"
+    val context = LocalContext.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isAgent) Arrangement.Start else Arrangement.End,
     ) {
         Surface(
-            modifier = Modifier.widthIn(max = 320.dp),
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = {
+                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Agent 对话", text))
+                        android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                ),
             shape = RoundedCornerShape(Dimens.RadiusCard),
             color = if (isAgent) MaterialTheme.colorScheme.secondaryContainer
             else MaterialTheme.colorScheme.primaryContainer,
@@ -679,16 +676,7 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f),
             )
-            vm.agentProgress?.let { (done, total) ->
-                LinearProgressIndicator(
-                    progress = { if (total == 0) 0f else done.toFloat() / total },
-                    modifier = Modifier.width(80.dp),
-                )
-                Text(
-                    text = " $done/$total",
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 4.dp),
-                )
+            vm.agentProgress?.let { (_done, _total) ->
                 TextButton(onClick = vm::cancelAgent) { Text("取消") }
             }
         }
@@ -790,18 +778,7 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                // 推理开关：由用户判断模型是否支持 reasoning（如 DeepSeek-R1/o1），手动开启
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
-                    Switch(
-                        checked = vm.thinkingLevel == ThinkingLevel.MEDIUM || vm.thinkingLevel == ThinkingLevel.HIGH,
-                        onCheckedChange = { vm.updateThinkingLevel(if (it) ThinkingLevel.MEDIUM else ThinkingLevel.NONE) },
-                    )
-                    Text(
-                        text = "模型推理（reasoning 模型开启，输出推理过程）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                // 推理开关已移除——始终使用 ThinkingLevel.AUTO，不发送 reasoning_effort
                 // Agent 文本模型选择（规划大脑 & 对话模型）
                 if (vm.visibleAgentTextModels.isNotEmpty()) {
                     Text(
