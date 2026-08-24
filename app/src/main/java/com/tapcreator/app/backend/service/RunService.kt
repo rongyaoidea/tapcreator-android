@@ -771,27 +771,29 @@ class RunService @Inject constructor(
     /**
      * 用默认文本模型优化用户的创作提示词：把口语化诉求润色成结构清晰、可直接用于
      * 图片/视频/音频生成的提示词。未配置文本模型/调用失败时返回原文，不阻塞生成。
+     * 使用已配置的文本模型（无需额外 auth 验证，直接用 router 获取可用模型）。
      */
     suspend fun optimizePrompt(token: String, prompt: String): String {
-        auth.currentUser(token) ?: throw AuthFailedException("未登录")
         val modelEntity = router.models(MediaKind.TEXT).firstOrNull { it.enabled }
             ?: router.defaultModel(MediaKind.TEXT)
             ?: return prompt.trim()
         val channelEntity = channels.byId(modelEntity.channelId) ?: return prompt.trim()
         val channel = channels.toDomain(channelEntity)
         val secrets = channels.secrets(channelEntity.id)
-        channels.assertReady(channel, secrets)
-        val result = gateway.agentChat(
-            channel, secrets, router.toDomain(modelEntity),
-            listOf(
-                ChatMessage(
-                    role = "system",
-                    content = "你是一位专业的 AIGC 提示词工程师，精通文生图/文生视频/文生音频。请把用户的创作诉求优化为结构清晰、画面感强、可直接用于生成的提示词：保留核心意图，补充关键主体、环境、光影、风格与镜头/节奏细节；语气平实，避免自我解释、编号或任何多余文字。只输出优化后的提示词本身。",
+        if (secrets.apiKey.isBlank()) return prompt.trim()
+        val result = runCatching {
+            gateway.agentChat(
+                channel, secrets, router.toDomain(modelEntity),
+                listOf(
+                    ChatMessage(
+                        role = "system",
+                        content = "你是一位专业的 AIGC 提示词工程师，精通文生图/文生视频/文生音频。请把用户的创作诉求优化为结构清晰、画面感强、可直接用于生成的提示词：保留核心意图，补充关键主体、环境、光影、风格与镜头/节奏细节；语气平实，避免自我解释、编号或任何多余文字。只输出优化后的提示词本身。",
+                    ),
+                    ChatMessage(role = "user", content = prompt),
                 ),
-                ChatMessage(role = "user", content = prompt),
-            ),
-            null,
-        )
+                null,
+            )
+        }.getOrNull() ?: return prompt.trim()
         return result.trim().trim('“', '”', '"', '。').ifBlank { prompt.trim() }
     }
 

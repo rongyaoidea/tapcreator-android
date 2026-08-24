@@ -626,7 +626,15 @@ private fun formatActionText(raw: String): String {
                 ).joinToString("，")
                 "生成${tool}：${prompt.take(80)}${if (refs.isNotEmpty()) "\n参考：$refs" else ""}"
             }
-            "finish" -> "完成：${obj["summary"]?.jsonPrimitive?.contentOrNull?.ifBlank { "本轮结束" } ?: "本轮结束"}"
+            "finish" -> {
+                val raw = obj["summary"]?.jsonPrimitive?.contentOrNull?.ifBlank { null } ?: "本轮结束"
+                // 清理转义符号
+                val clean = raw
+                    .replace("\\n", "\n").replace("\\\"", "\"")
+                    .replace("\\t", "\t").replace("\\\\", "\\")
+                    .trim()
+                "完成：$clean"
+            }
             "list_cards", "read_card", "list_assets", "list_runs", "read_trace", "list_skills", "layout_canvas" -> "查看：$action"
             "update_card", "update_asset", "move_asset", "delete_card", "delete_asset", "delete_folder",
             "create_folder", "memorize", "recall", "apply_skill", "skill_creator", "uninstall_skill", "link_cards",

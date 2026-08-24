@@ -94,6 +94,7 @@ $styleBlock
 - P2-6：复杂/多步诉求，先在第一条输出中给出 1~3 步简明规划（纳入该条 assistant 输出内容），再逐步执行，避免遗漏步骤。
 - 需要多步时一步步来：先执行第一步并观察结果，再决定下一步（如先图后视频，用 reference 延续同画面）。
 - 一次只做一件事，输出必须是一个合法 JSON 对象，action 的值必须取自上方工具名。
+- finish 的 summary 字段若包含引号/换行，必须用反斜杠转义，如 `{"action":"finish","summary":"已完成。\\n总共生成 2 张卡片。"}`
     """.trimIndent()
     }
 
@@ -294,12 +295,17 @@ $styleBlock
             // 容错：模型可能输出含特殊字符的 finish（summary 里有引号/换行导致 JSON 解析失败）
             if (action == null) {
                 val text = response.text
-                val finishMatch = Regex(""""action"\s*:\s*"finish"""").containsMatchIn(text)
-                if (finishMatch) {
-                    val summaryMatch = Regex(""""summary"\s*:\s*"((?:[^"\\]|\\.)*)"""").find(text)
-                    val summary = summaryMatch?.groupValues?.getOrNull(1)
-                        ?.replace("\\n", "\n")?.replace("\\\"", "\"")?.trim()
-                        ?: "已完成"
+                if (Regex(""""action"\s*:\s*"finish"""").containsMatchIn(text)) {
+                    // 用更健壮的方式提取：先找到 finish 动作块，再提取 summary
+                    val finishBlock = extractJsonObject(text) ?: text
+                    val summary = runCatching {
+                        json.decodeFromString<AgentAction>(finishBlock).summary
+                    }.getOrNull() ?: runCatching {
+                        // 容错：用正则提取 summary（支持转义引号）
+                        Regex(""""summary"\s*:\s*"((?:[^"\\]|\\.)*)"""").find(text)
+                            ?.groupValues?.getOrNull(1)
+                            ?.replace("\\n", "\n")?.replace("\\\"", "\"")?.trim()
+                    }.getOrNull() ?: "已完成"
                     action = AgentAction(action = "finish", summary = summary)
                 }
             }
@@ -1183,6 +1189,13 @@ $styleBlock
 
     /** 写入一条 assistant 收尾消息，让用户在对话流看到汇报 */
     private suspend fun writeAssistantSummary(conversationId: String, summary: String) {
+        // 清理 summary 中的转义符号和多余空白，使其可读
+        val clean = summary
+            .replace("\\n", "\n")      // 转义换行 → 实际换行
+            .replace("\\\"", "\"")     // 转义引号 → 实际引号
+            .replace("\\t", "\t")      // 转义制表符 → 实际制表符
+            .replace("\\\\", "\\")     // 双反斜杠 → 单反斜杠
+            .trim()
         db.withTransaction {
             // sequence 取号 + 插入放同一事务，避免与手动生成并发时取到相同序号导致时间线乱序
             val seq = db.messageDao().maxSequence(conversationId) + 1
@@ -1192,7 +1205,7 @@ $styleBlock
                     conversationId = conversationId,
                     sequence = seq,
                     role = "assistant",
-                    content = summary,
+                    content = clean,
                     kind = MediaKind.TEXT,
                     createdAt = System.currentTimeMillis(),
                 )
