@@ -10,7 +10,7 @@
 
 ### 概述
 
-Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 Agent（ReAct Loop），以文本模型为大脑，反复「思考→行动→观察」，直至完成用户诉求。Agent 可调用多种工具：文本/图片/视频/音频生成、联网搜索、素材库管理、卡片 CRUD、记忆系统、自进化技能系统、Alpine Linux 沙箱（shell 执行/Python 脚本/包安装），以及 MCP 插件扩展。
+Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 Agent（ReAct Loop），以文本模型为大脑，反复「思考→行动→观察」，直至完成用户诉求。Agent 可调用多种工具：文本/图片/视频/音频生成、联网搜索、素材库管理、卡片 CRUD、记忆系统、设计 Skill 系统、Alpine Linux 沙箱（shell 执行/Python 脚本/包安装），以及 MCP 插件扩展。
 
 ### 功能特性
 
@@ -42,7 +42,7 @@ Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 A
 
 ### 版本
 
-**v1.1.0** — 新增 Alpine 沙箱、MCP 插件系统、Agent 自进化、RPM 限流器、多项 bug 修复
+**v1.1.0** — 新增 Alpine 沙箱、MCP 插件系统、设计 Skill 系统、RPM 限流器、多项 bug 修复
 
 ### 构建
 
@@ -88,7 +88,7 @@ Tapcreator is an Android autonomous AI creation app. It features a built-in auto
 
 ### Version
 
-**v1.1.0** — Alpine sandbox, MCP plugin system, Agent self-evolution, RPM rate limiter, multiple bug fixes
+**v1.1.0** — Alpine sandbox, MCP plugin system, design Skill system, RPM rate limiter, multiple bug fixes
 
 ### Build
 
@@ -100,4 +100,6 @@ Tapcreator is an Android autonomous AI creation app. It features a built-in auto
 
 ## License
 
-Private repository — All rights reserved.
+Non-Commercial Use Only. See [LICENSE](LICENSE) for details.
+
+Commercial use requires prior written authorization.
