@@ -63,7 +63,10 @@ class AgentBrain @Inject constructor(
     private val contentService: ContentService,
     private val http: OkHttpClient,
     private val sandboxSearch: com.tapcreator.app.backend.sandbox.SandboxSearchTool,
+    private val sandbox: com.tapcreator.app.backend.sandbox.PRootSandbox,
     private val skillRegistry: com.tapcreator.app.backend.skill.SkillRegistry,
+    private val mcpManager: com.tapcreator.app.backend.mcp.MCPManager,
+    private val rateLimiter: com.tapcreator.app.backend.RateLimiter,
     private val db: AppDatabase,
 ) {
 
@@ -115,7 +118,7 @@ $styleBlock
         // 推理过程流：reasoning_content 单独回调，UI 显示为「推理」流，与思考(content token)流区分
         onReasoning: (String) -> Unit = {},
         // 推理深度级别（用户面板手动选择）：透传给 gateway.agentChatStream
-        thinkingLevel: ThinkingLevel = ThinkingLevel.NONE,
+        thinkingLevel: ThinkingLevel = ThinkingLevel.AUTO,
     ): List<String> {
         val modelEntity = modelId?.let { id -> router.models(MediaKind.TEXT).firstOrNull { it.id == id } }
             ?: router.defaultModel(MediaKind.TEXT)
@@ -228,6 +231,8 @@ $styleBlock
                 addAll(st.trace.takeLast(MEMORY_WINDOW))
             }
             val response = try {
+                // 每分钟请求数限制：等待配额
+                rateLimiter.acquire()
                 // 优先发结构化 tools（function calling）；若上游不支持（400）则标记后切纯文本 JSON 动作模式
                 gateway.agentChatStream(ctx.channel, ctx.secrets, ctx.model, messages, if (toolsSupported) toolsJson else null, thinkingLevel, maxTokens = 4096, onToken = onThinking, onReasoning = onReasoning)
             } catch (e: TapcreatorException) {
@@ -289,6 +294,19 @@ $styleBlock
                 action = parseAction(actionText)
             }
 
+            // 容错：模型可能输出含特殊字符的 finish（summary 里有引号/换行导致 JSON 解析失败）
+            if (action == null) {
+                val text = response.text
+                val finishMatch = Regex(""""action"\s*:\s*"finish"""").containsMatchIn(text)
+                if (finishMatch) {
+                    val summaryMatch = Regex(""""summary"\s*:\s*"((?:[^"\\]|\\.)*)"""").find(text)
+                    val summary = summaryMatch?.groupValues?.getOrNull(1)
+                        ?.replace("\\n", "\n")?.replace("\\\"", "\"")?.trim()
+                        ?: "已完成"
+                    action = AgentAction(action = "finish", summary = summary)
+                }
+            }
+
             if (action == null) {
                 st.recoveries++
                 if (st.recoveries >= ACTION_RECOVERY_BUDGET) {
@@ -322,7 +340,15 @@ $styleBlock
                 throw ce
             } catch (e: Exception) {
                 // 单轮发生未预期异常：回灌给模型换个方案，避免整轮 Agent 直接失败
-                st.trace += ChatMessage("user", "[循环异常] ${e.javaClass.simpleName}：${e.message ?: "未知错误"}。请改正后用一个动作继续，或 finish。")
+                // 网络异常（SocketException/连接中断等）给用户友好提示而非裸异常名
+                val friendlyMsg = when {
+                    e is java.net.SocketException || e is java.io.IOException ->
+                        "网络连接中断（${e.message ?: "连接被对端关闭"}），可能是上游超时或网络不稳定。请重试或检查网络。"
+                    e.message?.contains("Software caused connection abort", ignoreCase = true) == true ->
+                        "网络连接被系统中断（Software caused connection abort）。可能是网络切换或防火墙拦截，请重试。"
+                    else -> "${e.javaClass.simpleName}：${e.message ?: "未知错误"}"
+                }
+                st.trace += ChatMessage("user", "[循环异常] $friendlyMsg 请改正后用一个动作继续，或 finish。")
             }
             // P0：reflexion——模型主动 finish 且尚未自检够时，补一轮「自检」让其复盘；预算/超时等强制终止不复活
             if (st.finished && !st.forcedStop && reflexions < REFLEXION_TURNS && turn < maxTurns) {
@@ -493,6 +519,7 @@ $styleBlock
                         if (dataUri != null) {
                             val verdict = runCatching {
                                 withTimeout(VISION_TIMEOUT_MS) {
+                                    rateLimiter.acquire()
                                     gateway.visionChat(
                                         ctx.channel, ctx.secrets, ctx.model, dataUri,
                                         "这是本轮生成的第${n}张${kind.name}卡，原始要求：${action.prompt}。" +
@@ -920,6 +947,73 @@ $styleBlock
                     st.trace += ChatMessage("user", "[观察] 未找到可删除的第三方 Skill「$id」（内置预设不可删）。")
                 }
             }
+            "shell_execute" -> {
+                val cmd = action.command?.trim()?.takeIf { it.isNotBlank() }
+                if (cmd == null) {
+                    st.trace += ChatMessage("user", "[工具错误] shell_execute 需提供 command。")
+                    return ActionOutcome.CONTINUE
+                }
+                val timeoutMs = (action.timeout ?: 30) * 1000L
+                // 确保沙箱就绪，并尝试安装基础包（网络可达时自动安装 curl/python3/ffmpeg）
+                runCatching { sandbox.ensureReady() }
+                runCatching { sandbox.ensureBasePackages() }
+                val result = try {
+                    sandbox.exec(cmd, timeoutMs = timeoutMs)
+                } catch (e: Exception) {
+                    st.trace += ChatMessage("user", "[工具错误] 沙箱执行失败：${e.message}。可重试或换一种方式。")
+                    return ActionOutcome.CONTINUE
+                }
+                if (result.isSuccess) {
+                    val out = result.output.take(2000)
+                    st.trace += ChatMessage("user", "[观察] 命令执行成功（exit=0）：\n$out${if (result.output.length > 2000) "\n…（已截断）" else ""}")
+                } else {
+                    val out = result.output.take(2000)
+                    st.trace += ChatMessage("user", "[观察] 命令执行失败（exit=${result.exitCode}）：\n$out${if (result.output.length > 2000) "\n…（已截断）" else ""}")
+                }
+            }
+            "run_script" -> {
+                val content = action.script_content?.trim()?.takeIf { it.isNotBlank() }
+                if (content == null) {
+                    st.trace += ChatMessage("user", "[工具错误] run_script 需提供 content（脚本内容）。")
+                    return ActionOutcome.CONTINUE
+                }
+                val lang = action.language?.trim()?.lowercase()?.takeIf { it in setOf("python", "sh") } ?: "sh"
+                val ext = if (lang == "python") "py" else "sh"
+                val scriptName = "agent_script_${System.nanoTime()}.$ext"
+                runCatching { sandbox.ensureReady() }
+                runCatching { sandbox.ensureBasePackages() }
+                // 写入脚本到沙箱 media 目录
+                val writeCmd = "cat > /work/media/$scriptName << 'EOF'\n$content\nEOF"
+                val writeResult = sandbox.exec(writeCmd, timeoutMs = 10_000L)
+                if (!writeResult.isSuccess) {
+                    st.trace += ChatMessage("user", "[工具错误] 无法写入脚本文件。")
+                    return ActionOutcome.CONTINUE
+                }
+                sandbox.exec("chmod +x /work/media/$scriptName", timeoutMs = 5_000L)
+                val interpreter = if (lang == "python") "python3" else "sh"
+                val result = sandbox.exec("$interpreter /work/media/$scriptName", timeoutMs = 60_000L)
+                val out = result.output.take(2000)
+                if (result.isSuccess) {
+                    st.trace += ChatMessage("user", "[观察] 脚本执行成功（exit=0）：\n$out${if (result.output.length > 2000) "\n…（已截断）" else ""}")
+                } else {
+                    st.trace += ChatMessage("user", "[观察] 脚本执行失败（exit=${result.exitCode}）：\n$out${if (result.output.length > 2000) "\n…（已截断）" else ""}")
+                }
+            }
+            "install_package" -> {
+                val pkg = action.`package`?.trim()?.takeIf { it.isNotBlank() }
+                if (pkg == null) {
+                    st.trace += ChatMessage("user", "[工具错误] install_package 需提供 package（包名）。")
+                    return ActionOutcome.CONTINUE
+                }
+                runCatching { sandbox.ensureReady() }
+                runCatching { sandbox.ensureBasePackages() }
+                val result = sandbox.installPackage(pkg)
+                if (result.isSuccess) {
+                    st.trace += ChatMessage("user", "[观察] 已安装包「$pkg」。可在 shell_execute 中使用。")
+                } else {
+                    st.trace += ChatMessage("user", "[观察] 安装包「$pkg」失败（exit=${result.exitCode}）：${result.output.take(300)}")
+                }
+            }
             "layout_canvas" -> {
                 val cards = db.cardDao().listByConversation(ctx.conversationId)
                 if (cards.isEmpty()) {
@@ -976,6 +1070,82 @@ $styleBlock
                         st.trace += ChatMessage("user", "[观察] 已为模型「$modelName」配置可选分辨率：${parsed.joinToString(",")}（写入 $updated 个匹配条目）。")
                     }
                 }
+            }
+            "mcp_add_server" -> {
+                val name = action.name?.trim()?.takeIf { it.isNotBlank() }
+                val type = action.type?.trim()?.takeIf { it in setOf("stdio", "http") }
+                if (name == null || type == null) {
+                    st.trace += ChatMessage("user", "[工具错误] mcp_add_server 需提供 name（非空）和 type（stdio/http）。")
+                    return ActionOutcome.CONTINUE
+                }
+                val server = com.tapcreator.app.backend.mcp.MCPServer(
+                    name = name,
+                    type = type,
+                    command = if (type == "stdio") (action.command?.trim() ?: "") else "",
+                    args = if (type == "stdio" && !action.args.isNullOrBlank())
+                        action.args.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                    else emptyList(),
+                    url = if (type == "http") (action.command?.trim() ?: "") else "",
+                    env = if (!action.env.isNullOrBlank())
+                        runCatching { json.decodeFromString<Map<String, String>>(action.env) }.getOrDefault(emptyMap())
+                    else emptyMap(),
+                )
+                mcpManager.addServer(server)
+                st.trace += ChatMessage("user", "[观察] 已注册 MCP 服务器「$name」（$type）。可用 mcp_list_tools 查看可用工具。")
+            }
+            "mcp_remove_server" -> {
+                val name = action.server?.trim()?.takeIf { it.isNotBlank() }
+                if (name == null) {
+                    st.trace += ChatMessage("user", "[工具错误] mcp_remove_server 需提供 server（服务器名称）。")
+                    return ActionOutcome.CONTINUE
+                }
+                val removed = mcpManager.removeServer(name)
+                if (removed) {
+                    st.trace += ChatMessage("user", "[观察] 已删除 MCP 服务器「$name」。")
+                } else {
+                    st.trace += ChatMessage("user", "[观察] 未找到 MCP 服务器「$name」。")
+                }
+            }
+            "mcp_list_tools" -> {
+                val serverName = action.server?.trim()?.takeIf { it.isNotBlank() }
+                if (serverName == null) {
+                    st.trace += ChatMessage("user", "[工具错误] mcp_list_tools 需提供 server（服务器名称）。")
+                    return ActionOutcome.CONTINUE
+                }
+                val tools = try {
+                    mcpManager.listTools(serverName)
+                } catch (e: com.tapcreator.app.data.model.TapcreatorException) {
+                    st.trace += ChatMessage("user", "[工具错误] 列出 MCP 工具失败：${e.message}")
+                    return ActionOutcome.CONTINUE
+                }
+                if (tools.isEmpty()) {
+                    st.trace += ChatMessage("user", "[观察] MCP 服务器「$serverName」没有可用工具。")
+                } else {
+                    val lines = tools.joinToString("\n") { t ->
+                        "  - [${t.name}] ${t.description.take(100)}"
+                    }
+                    st.trace += ChatMessage("user", "[观察] MCP 服务器「$serverName」可用工具（共 ${tools.size} 个）：\n$lines")
+                }
+            }
+            "mcp_call_tool" -> {
+                val serverName = action.server?.trim()?.takeIf { it.isNotBlank() }
+                val toolName = action.tool?.trim()?.takeIf { it.isNotBlank() }
+                if (serverName == null || toolName == null) {
+                    st.trace += ChatMessage("user", "[工具错误] mcp_call_tool 需提供 server（服务器名称）和 tool（工具名称）。")
+                    return ActionOutcome.CONTINUE
+                }
+                val arguments = if (!action.arguments.isNullOrBlank())
+                    runCatching { json.decodeFromString<kotlinx.serialization.json.JsonObject>(action.arguments) }
+                        .getOrDefault(kotlinx.serialization.json.buildJsonObject { })
+                else kotlinx.serialization.json.buildJsonObject { }
+                val result = try {
+                    mcpManager.callTool(serverName, toolName, arguments)
+                } catch (e: com.tapcreator.app.data.model.TapcreatorException) {
+                    st.trace += ChatMessage("user", "[工具错误] MCP 调用失败：${e.message}")
+                    return ActionOutcome.CONTINUE
+                }
+                val capped = result.take(2000)
+                st.trace += ChatMessage("user", "[观察] MCP「$serverName/$toolName」返回：\n$capped${if (result.length > 2000) "\n…（已截断）" else ""}")
             }
             else -> {
                 st.recoveries++
@@ -1079,7 +1249,7 @@ $styleBlock
             .mapNotNull { it.mediaPath }
     }
 
-    private fun kindOfTool(raw: String?): MediaKind? =
+    internal fun kindOfTool(raw: String?): MediaKind? =
         when (AgentTool.from(raw ?: "")) {
             AgentTool.GENERATE_TEXT -> MediaKind.TEXT
             AgentTool.GENERATE_IMAGE -> MediaKind.IMAGE
@@ -1089,7 +1259,7 @@ $styleBlock
         }
 
     /** 参考矩阵：目标为图像时仅接受图像来源；目标为视频等其他类型时可接受图像或视频来源 */
-    private fun canUseReference(sourceKind: MediaKind, targetKind: MediaKind): Boolean =
+    internal fun canUseReference(sourceKind: MediaKind, targetKind: MediaKind): Boolean =
         when (targetKind) {
             MediaKind.IMAGE -> sourceKind == MediaKind.IMAGE
             else -> sourceKind == MediaKind.IMAGE || sourceKind == MediaKind.VIDEO
@@ -1182,11 +1352,11 @@ $styleBlock
         .replace("&mdash;", "—").replace("&hellip;", "…").replace("&ensp;", " ")
         .replace("&emsp;", " ")
 
-    private fun parseAction(raw: String): AgentAction? = runCatching {
+    internal fun parseAction(raw: String): AgentAction? = runCatching {
         json.decodeFromString<AgentAction>(raw)
     }.getOrNull()
 
-    private fun stripFence(raw: String): String {
+    internal fun stripFence(raw: String): String {
         var cleaned = raw.trim()
         if (cleaned.startsWith("```")) {
             cleaned = cleaned.substringAfter("\n").substringBeforeLast("```").trim().removePrefix("json").trim()
@@ -1195,7 +1365,7 @@ $styleBlock
     }
 
     /** 从混合文本中提取「第一个合法 JSON 对象」子串；找不到则返回 null。用于容忍模型输出的多余前后缀/注释。 */
-    private fun extractJsonObject(text: String): String? {
+    internal fun extractJsonObject(text: String): String? {
         val start = text.indexOf('{')
         if (start < 0) return null
         var depth = 0
@@ -1331,6 +1501,7 @@ private suspend fun handleBrainCallFailure(
     }
     // 非 429 的 4xx：标记上游不支持 function calling，回退到非流式纯文本模式再试一次
     return try {
+        rateLimiter.acquire()
         val fallbackText = gateway.agentChat(channel, secrets, model, messages, null)
         BrainFallback(ChatResponse(text = fallbackText))
     } catch (e2: TapcreatorException) {
@@ -1340,7 +1511,7 @@ private suspend fun handleBrainCallFailure(
 
 /** 防重复动作检测：维护最近 3 轮动作特征队列，动作特征为 "action:tool:prompt前60字符"。
      *  连续 3 轮完全相同时返回 true，触发强制 finish 避免空转。 */
-    private fun detectRepeatedAction(action: AgentAction, lastActions: MutableList<String>): Boolean {
+    internal fun detectRepeatedAction(action: AgentAction, lastActions: MutableList<String>): Boolean {
         val hash = buildString {
             append(action.action)
             if (action.tool != null) append(":").append(action.tool)

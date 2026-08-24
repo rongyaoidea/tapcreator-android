@@ -31,7 +31,11 @@ class SandboxSearchTool @Inject constructor(
      * @return 搜索结果列表，失败返回空列表
      */
     suspend fun search(query: String): List<SearchResult> = withContext(Dispatchers.IO) {
-        if (!sandbox.hasCommand("curl")) return@withContext emptyList()
+        if (!sandbox.hasCommand("curl")) {
+            // 尝试等待网络就绪并安装基础包
+            sandbox.ensureBasePackages()
+            if (!sandbox.hasCommand("curl")) return@withContext emptyList()
+        }
 
         // 1. 优先用配置的搜索 API（如 Bing Search / SerpAPI）
         val apiKey = settings.searchApiKey()
@@ -120,7 +124,10 @@ except Exception as e:
      * @return 正文文本，失败返回空串
      */
     suspend fun fetchText(url: String): String = withContext(Dispatchers.IO) {
-        if (!sandbox.hasCommand("curl")) return@withContext ""
+        if (!sandbox.hasCommand("curl")) {
+            sandbox.ensureBasePackages()
+            if (!sandbox.hasCommand("curl")) return@withContext ""
+        }
         if (!url.startsWith("http://") && !url.startsWith("https://")) return@withContext ""
 
         val script = """
@@ -161,9 +168,13 @@ except Exception as e:
     private suspend fun writeTempToSandbox(file: File): String {
         // 确保沙箱就绪
         sandbox.ensureReady()
-        val target = File(file.parentFile, file.name) // 已在 tmp，但需复制到沙箱可访问目录
-        // 假设 PRootSandbox 绑定的 work/media 目录映射到 context.filesDir/media
-        // 沙箱内路径为 /work/media/文件名
+        // 沙箱 work/media 目录映射到宿主侧 context.filesDir/media，需将文件实际复制过去
+        val sandboxDir = File(sandbox.hostMediaDir())
+        sandboxDir.mkdirs()
+        val target = File(sandboxDir, file.name)
+        if (file.exists()) {
+            file.copyTo(target, overwrite = true)
+        }
         return "/work/media/${file.name}"
     }
 }

@@ -284,7 +284,7 @@ fun ChatScreen(
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
                 CreationCard(viewModel, onSent = {
-                    viewModel.clearDraft()
+                    // send() 已同步清空 draftKind 和 editingDraftId，无需再调 clearDraft
                     draftEditorOpen = false
                 })
             }
@@ -630,9 +630,9 @@ private fun formatActionText(raw: String): String {
                 "生成${tool}：${prompt.take(80)}${if (refs.isNotEmpty()) "\n参考：$refs" else ""}"
             }
             "finish" -> "完成：${obj["summary"]?.jsonPrimitive?.contentOrNull?.ifBlank { "本轮结束" } ?: "本轮结束"}"
-            "list_cards", "read_card", "list_assets", "list_runs", "read_trace", "read_skills", "layout_canvas" -> "查看：$action"
+            "list_cards", "read_card", "list_assets", "list_runs", "read_trace", "list_skills", "layout_canvas" -> "查看：$action"
             "update_card", "update_asset", "move_asset", "delete_card", "delete_asset", "delete_folder",
-            "create_folder", "memorize", "recall", "write_skill", "retire_skill", "link_cards",
+            "create_folder", "memorize", "recall", "apply_skill", "skill_creator", "uninstall_skill", "link_cards",
             "unlink_cards", "web_search", "fetch_url", "configure_resolution" -> {
                 val target = obj["card_id"]?.jsonPrimitive?.contentOrNull
                     ?: obj["asset_id"]?.jsonPrimitive?.contentOrNull

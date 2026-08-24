@@ -183,7 +183,7 @@ class RunService @Inject constructor(
         return run
     }
 
-    private fun summarizeTitle(prompt: String): String {
+    internal fun summarizeTitle(prompt: String): String {
         val clean = prompt.trim().take(18)
         return if (clean.isBlank()) "新会话" else clean
     }
@@ -360,7 +360,7 @@ class RunService @Inject constructor(
             if (!mergedFile.exists()) throw TapcreatorException("视频拼接失败", "VIDEO_CONCAT")
             cleanup(tmpParts)
 
-            val asset = media.persistFromLocal(run.conversationId, run.id, mergedFile, titleFor(model.name, 0), MediaKind.VIDEO)
+            val asset = media.persistFromLocal(run.conversationId, run.id, mergedFile, titleFor(run.prompt, 0), MediaKind.VIDEO)
             val cardSeq = db.cardDao().maxSequence(run.conversationId) + 1
             // 拼接降级时在卡片内容标注，让用户知情（结果已保留，无需重试整轮）
             val note = if (concatDegraded) "${run.prompt}\n\n[分段拼接失败，仅保留单段]" else run.prompt
@@ -395,7 +395,7 @@ class RunService @Inject constructor(
     }
 
     /** 计算每段时长：OpenAI 兼容固定单段窗口；H3 每段落在 [4,15] 且尽量均分，保证可拼 */
-    private fun segmentDurations(target: Int, isH3: Boolean): List<Int> {
+    internal fun segmentDurations(target: Int, isH3: Boolean): List<Int> {
         if (!isH3) {
             val segCount = ((target - 1) / SEGMENT_SECONDS) + 1
             return (0 until segCount).map { minOf(SEGMENT_SECONDS, target - it * SEGMENT_SECONDS).coerceAtLeast(1) }
@@ -546,7 +546,7 @@ class RunService @Inject constructor(
         return ids.toList()
     }
 
-    private fun kindForPath(path: String): MediaKind = when {
+    internal fun kindForPath(path: String): MediaKind = when {
         path.endsWith(".mp4") || path.endsWith(".mov") || path.endsWith(".webm") ||
             path.endsWith(".mkv") -> MediaKind.VIDEO
         path.endsWith(".mp3") || path.endsWith(".wav") || path.endsWith(".m4a") ||
@@ -756,8 +756,17 @@ class RunService @Inject constructor(
         promptEnhanced = request.promptEnhanced,
     )
 
-    private fun titleFor(modelName: String, index: Int): String =
-        if (index == 0) modelName else "$modelName ${index + 1}"
+    internal fun titleFor(prompt: String, index: Int): String {
+        // 取提示词前 12 个字作为标题，避免两张卡都显示模型名
+        val fromPrompt = prompt.trim().take(12).let { t ->
+            if (t.length >= 3) t else null
+        }
+        return if (fromPrompt != null) {
+            if (index == 0) fromPrompt else "$fromPrompt ${index + 1}"
+        } else {
+            "卡片 ${index + 1}"
+        }
+    }
 
     /**
      * 用默认文本模型优化用户的创作提示词：把口语化诉求润色成结构清晰、可直接用于
@@ -813,6 +822,6 @@ class RunService @Inject constructor(
                 ).trim().trim('“', '”', '"', '。', '.', ' ', '\n', '\t')
             }.getOrNull()?.takeIf { it.isNotBlank() && it.length <= 24 }
         }
-        return title ?: titleFor(modelName, index)
+        return title ?: titleFor(prompt, index)
     }
 }

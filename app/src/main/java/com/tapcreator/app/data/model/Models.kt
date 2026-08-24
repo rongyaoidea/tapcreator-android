@@ -125,6 +125,7 @@ data class ChatResponse(
 
 /** 推理深度级别（透传 reasoning_effort） */
 enum class ThinkingLevel(val effort: String) {
+    AUTO("auto"),   // 默认：不发 reasoning_effort，让上游自动决定
     NONE("none"),
     LOW("low"),
     MEDIUM("medium"),

@@ -76,6 +76,26 @@ data class AgentAction(
     val role: String? = null,
     /** apply_skill / uninstall_skill 的 skill id */
     val skill_id: String? = null,
+    /** shell_execute 的命令 */
+    val command: String? = null,
+    /** shell_execute 的超时秒数 */
+    val timeout: Int? = null,
+    /** run_script 的脚本内容 */
+    val script_content: String? = null,
+    /** run_script 的语言：python/sh */
+    val language: String? = null,
+    /** install_package 的包名 */
+    val `package`: String? = null,
+    /** mcp_add_server 的类型（stdio/http） */
+    val type: String? = null,
+    /** mcp_add_server 的参数（逗号分隔） */
+    val args: String? = null,
+    /** mcp_add_server 的环境变量（JSON 字符串） */
+    val env: String? = null,
+    /** mcp_list_tools / mcp_call_tool 的服务器名 */
+    val server: String? = null,
+    /** mcp_call_tool 的参数（JSON 字符串） */
+    val arguments: String? = null,
     /** skill_creator 的名称 */
     val name: String? = null,
     /** skill_creator 的分类：photo/poster */

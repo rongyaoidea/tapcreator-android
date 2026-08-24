@@ -30,6 +30,9 @@ class TapcreatorApp : Application() {
     @Inject
     lateinit var skillRegistry: com.tapcreator.app.backend.skill.SkillRegistry
 
+    @Inject
+    lateinit var mcpManager: com.tapcreator.app.backend.mcp.MCPManager
+
     override fun onCreate() {
         super.onCreate()
         installCrashLogger()
@@ -42,6 +45,8 @@ class TapcreatorApp : Application() {
                     runService.reconcileStaleRuns()
                     // 加载已安装的第三方设计 Skill
                     skillRegistry.init()
+                    // 加载已注册的 MCP 服务器
+                    mcpManager.init()
                     // 后台预热沙箱：解压 rootfs + 启动 PRoot + 安装 ffmpeg/curl/python3
                     // 首次约 30-60 秒，不阻塞首帧；沙箱就绪后 Agent 的搜索/拼接工具可用
                     sandbox.ensureReady()

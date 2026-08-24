@@ -37,7 +37,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.tapcreator.app.data.db.ChannelEntity
-import com.tapcreator.app.data.db.AgentSkillEntity
 import com.tapcreator.app.data.model.MediaKind
 import com.tapcreator.app.ui.theme.Dimens
 
@@ -104,7 +103,90 @@ fun SettingsScreen(
 
         AgentPrefsSection(vm)
 
-        SkillLearnSection(vm)
+        AlpineSandboxSection(vm)
+
+        SearchApiSection(vm)
+    }
+}
+
+/** Alpine 沙箱状态区：显示沙箱是否就绪 + 已安装的命令 */
+@Composable
+private fun AlpineSandboxSection(vm: SettingsViewModel) {
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
+        Text(
+            text = "Alpine 沙箱",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding),
+        )
+        Text(
+            text = "内置 Alpine Linux + PRoot 沙箱，Agent 的 ffmpeg 视频拼接、curl 搜索、python3 脚本在沙箱内执行。首次启动需联网安装包（约 30-60 秒）。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
+        )
+        Row(
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "沙箱状态：",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "已启用（App 启动时自动初始化）",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Text(
+            text = "内置命令：ffmpeg（视频拼接/转码）、curl（联网）、python3（脚本执行）、grep/jq（文本处理）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
+        )
+    }
+}
+
+/** 搜索 API 配置区：用户可配置搜索 API 替代默认的 Bing HTML 抓取 */
+@Composable
+private fun SearchApiSection(vm: SettingsViewModel) {
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
+        Text(
+            text = "搜索 API",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding),
+        )
+        Text(
+            text = "配置搜索 API 后，Agent 的 web_search 优先用此 API（更稳定）。未配置时回退到 cn.bing.com HTML 抓取。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
+        )
+        var apiUrl by remember { mutableStateOf("") }
+        var apiKey by remember { mutableStateOf("") }
+        OutlinedTextField(
+            value = apiUrl,
+            onValueChange = { apiUrl = it },
+            label = { Text("搜索 API URL") },
+            placeholder = { Text("https://api.bing.microsoft.com/v7.0/search") },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            label = { Text("API Key") },
+            placeholder = { Text("输入搜索 API 密钥") },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
+            singleLine = true,
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+        )
+        Button(
+            onClick = { vm.saveSearchApi(apiUrl.trim(), apiKey.trim()) },
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 8.dp),
+        ) { Text("保存") }
     }
 }
 
@@ -185,123 +267,6 @@ private fun AgentPrefsSection(vm: SettingsViewModel) {
 }
 
 /** Agent 自进化学习区：低危技能自动生效，高危技能待人工审批；支持撤销与清空整个学习库 */
-@Composable
-private fun SkillLearnSection(vm: SettingsViewModel) {
-    val pendingSkills by vm.pendingSkills.collectAsState()
-    val activeSkills by vm.activeSkills.collectAsState()
-    var confirmClearAll by remember { mutableStateOf(false) }
-
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
-        Text(
-            text = "Agent 自进化学习",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding),
-        )
-        Text(
-            text = "Agent 复盘后会把可复用经验沉淀为技能：低危技能自动生效并注入后续创作；高危技能（涉及删除/改写）需你审批后才启用。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-        )
-
-        // 高危待审批
-        if (pendingSkills.isEmpty()) {
-            Text(
-                text = "暂无待审批的高危技能",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 6.dp),
-            )
-        } else {
-            Text(
-                text = "待审批（${pendingSkills.size} 条高危）",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-            )
-            pendingSkills.forEach { skill -> SkillRow(skill, pending = true, vm) }
-        }
-
-        // 已生效
-        Text(
-            text = if (activeSkills.isEmpty()) "暂无已生效技能"
-            else "已生效技能（${activeSkills.size} 条，自动注入 Agent）",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp)
-                .padding(top = 10.dp),
-        )
-        activeSkills.forEach { skill -> SkillRow(skill, pending = false, vm) }
-
-        // 清空学习库
-        if (activeSkills.isNotEmpty() || pendingSkills.isNotEmpty()) {
-            OutlinedButton(
-                onClick = { confirmClearAll = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Dimens.PagePadding, vertical = 8.dp),
-            ) {
-                Text("一键清空学习库", color = MaterialTheme.colorScheme.error)
-            }
-        }
-    }
-
-    if (confirmClearAll) {
-        AlertDialog(
-            onDismissRequest = { confirmClearAll = false },
-            title = { Text("清空学习库？") },
-            text = { Text("将撤销全部已学技能（含待审批与已生效），此操作不可恢复。") },
-            confirmButton = {
-                TextButton(onClick = { vm.clearSkills(); confirmClearAll = false }) { Text("清空") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmClearAll = false }) { Text("取消") }
-            },
-        )
-    }
-}
-
-@Composable
-private fun SkillRow(skill: AgentSkillEntity, pending: Boolean, vm: SettingsViewModel) {
-    var confirmClear by remember { mutableStateOf(false) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-    ) {
-        Text(
-            text = "[${skill.category} / ${vm.riskLabel(skill.risk)}] ${skill.content}",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (pending) {
-                TextButton(onClick = { vm.approveSkill(skill.id) }) { Text("批准生效") }
-                TextButton(onClick = { vm.rejectSkill(skill.id) }) {
-                    Text("拒绝", color = MaterialTheme.colorScheme.error)
-                }
-            } else {
-                TextButton(onClick = { confirmClear = true }) {
-                    Text("撤销", color = MaterialTheme.colorScheme.error)
-                }
-            }
-        }
-    }
-
-    if (confirmClear && !pending) {
-        AlertDialog(
-            onDismissRequest = { confirmClear = false },
-            title = { Text("撤销该技能？") },
-            text = { Text("撤销后将不再注入 Agent 上下文。") },
-            confirmButton = {
-                TextButton(onClick = { vm.revokeSkill(skill.id); confirmClear = false }) { Text("撤销") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmClear = false }) { Text("取消") }
-            },
-        )
-    }
-}
-
 @Composable
 private fun KindSection(kind: MediaKind, label: String, models: List<ModelInfo>, channelList: List<ChannelEntity>, vm: SettingsViewModel) {
     var showAdd by remember(kind) { mutableStateOf(false) }

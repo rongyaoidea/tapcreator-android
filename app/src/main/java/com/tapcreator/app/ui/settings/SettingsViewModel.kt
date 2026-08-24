@@ -302,4 +302,12 @@ class SettingsViewModel @Inject constructor(
             toast("学习库已清空")
         }
     }
+
+    /** 保存搜索 API 配置 */
+    fun saveSearchApi(url: String, key: String) {
+        viewModelScope.launch {
+            settings.saveSearchApi(key, url)
+            toast("搜索 API 已保存")
+        }
+    }
 }

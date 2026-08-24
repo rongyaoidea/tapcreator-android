@@ -23,19 +23,21 @@ class AgentToolRegistryTest {
     @Test
     fun `tools list contains all core declared tools`() {
         val names = AgentToolRegistry.tools.map { it.name }.toSet()
-        // 核心工具必须存在：生成 + 卡片 CRUD + 素材库 + 记忆 + 技能自进化 + 关系图 + finish
+        // 核心工具必须存在：生成 + 卡片 CRUD + 素材库 + 记忆 + 搜索 + 设计 Skill + 关系图 + finish
         listOf(
             "generate", "list_cards", "read_card", "update_card", "delete_card",
             "list_assets", "update_asset", "move_asset", "delete_asset",
             "create_folder", "delete_folder",
             "memorize", "recall", "list_runs", "read_trace",
-            "write_skill", "read_skills", "retire_skill",
+            "web_search", "fetch_url",
+            "configure_resolution",
+            "list_skills", "apply_skill", "skill_creator", "uninstall_skill",
             "link_cards", "unlink_cards", "layout_canvas", "finish",
         ).forEach {
             assertTrue("缺少工具: $it", names.contains(it))
         }
         // 数量不硬编码：避免新增工具时误报。只校验不低于核心集合大小。
-        assertTrue("工具数应不少于核心集合", AgentToolRegistry.tools.size >= 22)
+        assertTrue("工具数应不少于核心集合", AgentToolRegistry.tools.size >= 23)
     }
 
     @Test

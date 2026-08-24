@@ -27,6 +27,7 @@ class SettingsStore(private val context: Context) {
         val installedSkills = stringPreferencesKey("installed_skills")
         val searchApiKey = stringPreferencesKey("search_api_key")
         val searchApiUrl = stringPreferencesKey("search_api_url")
+        val mcpServers = stringPreferencesKey("mcp_servers")
     }
 
     /** 默认渠道/模型是否已种子化（仅首次启动种子化一次，避免用户删除后重启又恢复） */
@@ -121,5 +122,13 @@ class SettingsStore(private val context: Context) {
             it[Keys.searchApiKey] = key
             it[Keys.searchApiUrl] = url
         }
+    }
+
+    /** MCP 服务器列表（JSON 数组，空=无注册服务器） */
+    suspend fun mcpServersJson(): String =
+        context.dataStore.data.first()[Keys.mcpServers] ?: ""
+
+    suspend fun saveMcpServersJson(json: String) {
+        context.dataStore.edit { it[Keys.mcpServers] = json }
     }
 }

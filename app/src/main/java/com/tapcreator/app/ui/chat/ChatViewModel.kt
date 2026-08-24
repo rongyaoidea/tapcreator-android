@@ -262,7 +262,7 @@ class ChatViewModel @Inject constructor(
         val agentModelId: String? = null,
         val cinematic: Boolean = true,
         val promptOptimize: Boolean = false,
-        val reasoning: ThinkingLevel = ThinkingLevel.NONE,
+        val reasoning: ThinkingLevel = ThinkingLevel.AUTO,
     )
 
     @Serializable
@@ -362,8 +362,8 @@ class ChatViewModel @Inject constructor(
     /** MadStory 镜头分镜提示词优化开关 */
     var cinematicEnabled by mutableStateOf(true)
 
-    /** 推理深度级别：用户手动选择（NONE/LOW/MEDIUM/HIGH），默认 NONE（关闭） */
-    var thinkingLevel by mutableStateOf(ThinkingLevel.NONE)
+    /** 推理深度级别：默认 AUTO（自动，不发 reasoning_effort），可选 LOW/MEDIUM/HIGH */
+    var thinkingLevel by mutableStateOf(ThinkingLevel.AUTO)
 
     private var agentJob: Job? = null
 
@@ -646,18 +646,46 @@ class ChatViewModel @Inject constructor(
             referencedAssetPaths = usableAssets.mapNotNull { it.mediaPath },
         )
         val req = lastRequestBase!!
-        // 提交瞬间：把当前编辑的空白卡升级为「生成中」占位卡——更新 status 为 RUNNING，
-        // 使其在画布上以加载动画呈现等待态，而非静默消失。run 完成产出新卡后由下方删除逻辑清理。
-        val draftIdForRunning = editingDraftId
+        // 提交瞬间：确保有一张「生成中」占位卡在画布上显示进度，而非静默消失。
+        // 若有 draft 卡则升级为 RUNNING；若没有（直接从输入框提交），创建一张 RUNNING 占位卡。
+        // 同步快照 editingDraftId，然后立即清空 draft 状态（关闭底部浮层），
+        // 避免 onSent 的 clearDraft() 与 send() 协程产生竞态。
+        val currentDraftId = editingDraftId
+        val draftIdForRunning = currentDraftId ?: "draft_${java.util.UUID.randomUUID().toString().replace("-", "")}"
+        val hasExistingDraft = currentDraftId != null
+        draftKind = null
+        editingDraftId = null
         viewModelScope.launch {
-            if (draftIdForRunning != null) {
+            if (hasExistingDraft) {
                 runCatching {
                     db.cardDao().byId(draftIdForRunning)?.let { c ->
                         db.cardDao().update(c.copy(status = RunStatus.RUNNING, content = req.prompt))
                     }
                 }
+            } else {
+                // 无 draft 卡：创建一张 RUNNING 占位卡，使其在画布上显示生成中进度
+                runCatching {
+                    val count = runCatching { db.cardDao().listByConversation(conversationId) }
+                        .getOrNull().orEmpty().size
+                    val col = 6
+                    val x = 24f + (count % col) * 170f
+                    val y = 24f + (count / col) * 170f
+                    db.cardDao().saveDraft(
+                        com.tapcreator.app.data.db.CardEntity(
+                            id = draftIdForRunning,
+                            runId = "draft",
+                            conversationId = conversationId,
+                            sequence = 0,
+                            kind = selectedKind,
+                            title = "",
+                            content = req.prompt,
+                            x = x,
+                            y = y,
+                            status = RunStatus.RUNNING,
+                        )
+                    )
+                }
             }
-            // 自进化：Agent 不在执行中时，若本消息是对上一条 Agent 产出的评价（满意/重做）则归因赢率。
             // Agent 仍执行时不消费，避免把「进行中批次」当作已完成产出误判。
             // 提示词优化：开启时先用默认文本模型润色，失败则回退原文继续生成
             if (opt) {
@@ -675,31 +703,33 @@ class ChatViewModel @Inject constructor(
             try {
                 runService.launch(t, r2)
             } catch (ce: CancellationException) {
+                // 取消时仍须清理草稿卡，避免残留 RUNNING 卡在画布上
+                cleanupDraftCard(currentDraftId, genFailed = false)
                 throw ce // 取消必须透传，不能当普通失败吞掉
             } catch (e: Exception) {
                 lastError = e.message ?: "生成失败"
                 genFailed = true
             }
             input = ""
-            draftKind = null
-            // 成功：删占位 draft 卡（产出卡已落库）；失败：标 FAILED 保留，让用户在画布看到失败态
-            val draftId = editingDraftId
-            editingDraftId = null
-            if (draftId != null) {
-                runCatching {
-                    if (genFailed) {
-                        db.cardDao().byId(draftId)?.let { c ->
-                            db.cardDao().update(c.copy(status = RunStatus.FAILED))
-                        }
-                    } else {
-                        db.cardLinkDao().deleteForCard(draftId)
-                        db.cardDao().hardDelete(draftId)
-                    }
-                }
-            }
+            cleanupDraftCard(currentDraftId, genFailed)
             if (r2.referencedAssetIds.isNotEmpty()) selectedReferenceCards = emptyList()
             if (r2.referencedAssetPaths.isNotEmpty()) selectedReferenceAssets = emptyList()
             markStateChanged()
+        }
+    }
+
+    /** 清理草稿卡：生成成功时删除，失败时标 FAILED，取消时删除。 */
+    private suspend fun cleanupDraftCard(draftId: String?, genFailed: Boolean) {
+        if (draftId == null) return
+        runCatching {
+            if (genFailed) {
+                db.cardDao().byId(draftId)?.let { c ->
+                    db.cardDao().update(c.copy(status = RunStatus.FAILED))
+                }
+            } else {
+                db.cardLinkDao().deleteForCard(draftId)
+                db.cardDao().hardDelete(draftId)
+            }
         }
     }
 
@@ -721,7 +751,6 @@ class ChatViewModel @Inject constructor(
         markStateChanged()
         agentJob = viewModelScope.launch {
             try {
-                // 自进化：本条 Agent 指令若是对上一条产出的评价（满意/重做），先把情感归因到上一批注入技能
                 // 读取用户偏好：记忆系统开关 + 个人风格偏好（注入 Agent 系统提示）
                 val memEnabled = settings.agentMemoryEnabledValue()
                 val style = settings.agentStyleValue().trim()

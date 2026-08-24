@@ -267,7 +267,7 @@ class ChannelRepository @Inject constructor(
     }
 
     /** 媒体类型对应的（参考/生成）能力标签 */
-    private fun kindCaps(kind: MediaKind): String = when (kind) {
+    internal fun kindCaps(kind: MediaKind): String = when (kind) {
         MediaKind.TEXT -> "text,reference"
         MediaKind.IMAGE -> "image"
         MediaKind.VIDEO -> "video"
@@ -321,7 +321,7 @@ class ChannelRepository @Inject constructor(
     }
 
     /** 根据模型名推断其媒体类型与能力标签（仅用于把"新增渠道"的模型目录落成可选模型） */
-    private fun classifyModel(modelName: String): Pair<MediaKind, String> {
+    internal fun classifyModel(modelName: String): Pair<MediaKind, String> {
         val n = modelName.lowercase()
         return when {
             containsAny(n, "video", "veo", "sora", "kling", "hailuo", "runway", "pika", "text-to-video") ->
@@ -337,7 +337,7 @@ class ChannelRepository @Inject constructor(
         }
     }
 
-    private fun containsAny(value: String, vararg keys: String): Boolean =
+    internal fun containsAny(value: String, vararg keys: String): Boolean =
         keys.any { value.contains(it) }
 
     suspend fun update(channel: ChannelEntity) {
@@ -389,6 +389,6 @@ class ChannelRepository @Inject constructor(
     }
 
     /** 地址含 minimax 时自动识别为 MiniMax H3 协议（官方 api.minimaxi.com / api.minimax.io 与 metaso.cn/api/minimax 共用 schema） */
-    private fun detectProtocol(baseUrl: String, fallback: Protocol): Protocol =
+    internal fun detectProtocol(baseUrl: String, fallback: Protocol): Protocol =
         if (fallback == Protocol.OPENAI_COMPAT && baseUrl.lowercase().contains("minimax")) Protocol.MINIMAX_H3 else fallback
 }

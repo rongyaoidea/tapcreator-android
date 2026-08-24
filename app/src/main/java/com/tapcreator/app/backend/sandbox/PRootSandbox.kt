@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -53,6 +54,9 @@ class PRootSandbox @Inject constructor(
 
     /** 沙箱内可访问的媒体目录（映射到 App 私有 media 目录） */
     fun sandboxMediaDir(): String = SANDBOX_WORK + "/media"
+
+    /** Android 文件系统上对应的媒体目录路径（沙箱外宿主侧） */
+    fun hostMediaDir(): String = File(context.filesDir, "media").absolutePath
 
     /**
      * 确保沙箱就绪：解压 rootfs（首次）+ 复制 PRoot + 启动 PRoot 交互进程。
@@ -201,6 +205,8 @@ class PRootSandbox @Inject constructor(
             appendLine("export PATH=/usr/bin:/usr/sbin:/bin:/sbin:\$PATH")
             appendLine("export HOME=/root")
             appendLine("export TERM=dumb")
+            // 确保 DNS 解析可用（PRoot 沙箱中 Android 的 DNS 可能不自动映射）
+            appendLine("mkdir -p /etc && echo 'nameserver 8.8.8.8' > /etc/resolv.conf && echo 'nameserver 114.114.114.114' >> /etc/resolv.conf 2>/dev/null; true")
             // 后台静默安装 ffmpeg/curl/python3（不阻塞沙箱就绪，exec 时若不可用会回退）
             appendLine("(apk update 2>/dev/null && apk add --no-cache ffmpeg curl python3 ca-certificates 2>/dev/null) &")
             appendLine("echo '___SANDBOX_READY___'")
@@ -280,15 +286,64 @@ class PRootSandbox @Inject constructor(
 
     /**
      * 安装额外的 Alpine 包（幂等）。
+     * 安装失败时自动重试（最多 3 次，每次间隔 3 秒），处理网络暂不可用的情况。
      */
     suspend fun installPackage(vararg packages: String): ShellResult {
-        return exec("apk add --no-cache ${packages.joinToString(" ")}")
+        val pkgStr = packages.joinToString(" ")
+        var lastResult: ShellResult? = null
+        for (attempt in 1..3) {
+            lastResult = exec("apk add --no-cache $pkgStr", timeoutMs = 60_000L)
+            if (lastResult.isSuccess) return lastResult
+            // 网络错误（如暂时性 DNS 解析失败）时重试
+            if (attempt < 3) {
+                kotlinx.coroutines.delay(3000L)
+            }
+        }
+        return lastResult ?: ShellResult("安装失败：无法连接 Alpine 包仓库", -1)
     }
 
     /** 检查沙箱内某个命令是否可用 */
     suspend fun hasCommand(cmd: String): Boolean {
         val r = exec("which $cmd 2>/dev/null")
         return r.exitCode == 0 && r.output.isNotBlank()
+    }
+
+    /**
+     * 等待沙箱网络就绪。
+     * 通过 curl 检查外网可达性，超时或失败返回 false，不阻塞沙箱使用。
+     * @param timeoutMs 最长等待时间（毫秒），默认 15 秒
+     * @return true=网络就绪，false=不可达（沙箱仍可用，但网络操作可能失败）
+     */
+    suspend fun waitForNetwork(timeoutMs: Long = 15_000L): Boolean {
+        if (!ready.get() || process?.isAlive != true) return false
+        val started = System.currentTimeMillis()
+        val targets = listOf("https://mirrors.aliyun.com/alpine/", "https://dl-cdn.alpinelinux.org/alpine/")
+        while (System.currentTimeMillis() - started < timeoutMs) {
+            for (url in targets) {
+                val r = exec("curl -sI --connect-timeout 5 --max-time 8 '$url' 2>/dev/null | head -1", timeoutMs = 10_000L)
+                if (r.isSuccess && r.output.contains("200", ignoreCase = true)) {
+                    return true // 至少一个镜像可达
+                }
+            }
+            // 全部镜像都不可达，等待 2 秒后重试
+            kotlinx.coroutines.delay(2000L)
+        }
+        return false
+    }
+
+    /**
+     * 确保基础包已安装（带网络就绪等待）。
+     * 先等待网络就绪，然后安装 ffmpeg/curl/python3/ca-certificates。
+     * 幂等：已安装则跳过。
+     */
+    suspend fun ensureBasePackages(): Boolean {
+        // 先检查是否已安装
+        if (hasCommand("curl") && hasCommand("python3") && hasCommand("ffmpeg")) return true
+        // 等待网络就绪
+        waitForNetwork(20_000L)
+        // 安装基础包
+        val result = installPackage("ffmpeg", "curl", "python3", "ca-certificates")
+        return result.isSuccess
     }
 
     /** 关闭沙箱（PRoot 进程退出，rootfs 保留） */

@@ -326,8 +326,8 @@ class ProviderGateway @Inject constructor(
         model: ModelOption,
         messages: List<ChatMessage>,
         toolsJson: kotlinx.serialization.json.JsonArray? = null,
-        // 推理深度级别（用户面板手动选择）：NONE 不发 reasoning_effort（非 reasoning 模型传此会被拒 400）
-        thinkingLevel: ThinkingLevel = ThinkingLevel.NONE,
+        // 推理深度级别：AUTO/NONE 不发 reasoning_effort；LOW/MEDIUM/HIGH 透传
+        thinkingLevel: ThinkingLevel = ThinkingLevel.AUTO,
         maxTokens: Int = 4096,
         onToken: (String) -> Unit = {},
         // 推理过程单独流：DeepSeek-R1 / o1 等模型在 SSE delta.reasoning_content 里返回推理，
@@ -347,7 +347,8 @@ class ProviderGateway @Inject constructor(
             put("max_tokens", maxTokens)
             put("stream", true)
             // 用户手动选择推理深度：NONE 不发送，LOW/MEDIUM/HIGH 透传
-            if (thinkingLevel != ThinkingLevel.NONE) {
+            // AUTO/NONE 不发 reasoning_effort；且 reasoning_effort 与 tools 不同时发（避免聚合商 400）
+            if (thinkingLevel != ThinkingLevel.AUTO && thinkingLevel != ThinkingLevel.NONE && toolsJson == null) {
                 put("reasoning_effort", thinkingLevel.effort)
             }
             if (toolsJson != null) {
@@ -793,7 +794,7 @@ class ProviderGateway @Inject constructor(
 
     /** 归一化 Base URL：用户可能误把完整端点（/chat/completions、/models 等）也填进 Base URL，
      * 这里裁剪回基础地址（保留品牌域名与 /v1），再交给后续拼端点。 */
-    private fun normalizeBase(raw: String): String {
+    internal fun normalizeBase(raw: String): String {
         var b = raw.trim().trimEnd('/')
         val endpoints = listOf(
             "/chat/completions", "/images/generations", "/videos/generations",
@@ -813,7 +814,7 @@ class ProviderGateway @Inject constructor(
     }
 
     /** 生成候选请求 URL：OpenAI 风格端点若 Base URL 没带 /v1（最常见 404 原因），补一次 /v1 变体重试 */
-    private fun endpointUrls(base: String, endpoint: String): List<String> {
+    internal fun endpointUrls(base: String, endpoint: String): List<String> {
         val first = base + endpoint
         val openAiStyle = endpoint in setOf(
             "/chat/completions", "/images/generations", "/videos/generations", "/audio/speech",
@@ -832,7 +833,7 @@ class ProviderGateway @Inject constructor(
         return "上游错误 HTTP ${resp.code}（$url）${reason?.let { "：$it" } ?: if (snippet.isBlank()) "" else "：$snippet"}"
     }
 
-    private fun ratioToSize(ratio: String): String = when (ratio) {
+    internal fun ratioToSize(ratio: String): String = when (ratio) {
         "1:1" -> "1024x1024"
         "4:3", "3:4" -> "1024x1024"
         "16:9", "21:9" -> "1792x1024"
@@ -848,7 +849,7 @@ class ProviderGateway @Inject constructor(
      *  - 视频按 quality 挑支持集内的档位，否则取模型第一档；
      *  - 模型未声明支持集时返回 null，交由调用处回退原有逻辑。
      */
-    private fun normalizeResolution(
+    internal fun normalizeResolution(
         model: ModelOption,
         kind: MediaKind,
         resolution: String?,
@@ -873,7 +874,7 @@ class ProviderGateway @Inject constructor(
     }
 
     /** 比例串("16:9"/"1:1") -> 宽:高 数值；无法解析回退 1.0 */
-    private fun ratioAspect(ratio: String?): Double {
+    internal fun ratioAspect(ratio: String?): Double {
         if (ratio != null) {
             val parts = ratio.split(":").map { it.trim().toDoubleOrNull() }
             if (parts.size == 2 && parts[0] != null && parts[1] != null && parts[1] != 0.0) {
@@ -884,20 +885,20 @@ class ProviderGateway @Inject constructor(
     }
 
     /** "WxH"（兼容全角乘号/小写 x）-> 宽:高 数值；无法解析回退 1.0 */
-    private fun sizeAspect(size: String): Double {
+    internal fun sizeAspect(size: String): Double {
         val parts = size.lowercase().replace("×", "x").split("x").map { it.trim().toDoubleOrNull() }
         return if (parts.size == 2 && parts[0] != null && parts[1] != null && parts[1] != 0.0) parts[0]!! / parts[1]!! else 1.0
     }
 
     /** "WxH" -> 像素数；无法解析回退 1 */
-    private fun sizeProduct(size: String): Long {
+    internal fun sizeProduct(size: String): Long {
         val parts = size.lowercase().replace("×", "x").split("x").map { it.trim().toLongOrNull() }
         return if (parts.size == 2 && parts[0] != null && parts[1] != null) parts[0]!! * parts[1]!! else 1L
     }
 
     /** 在支持集里挑分辨率：优先命中目标比例的同朝向（横对横/竖对竖），组内取面积最大的一档；
      *  仅当该朝向无任何候选时才退化为全量比例最近。 */
-    private fun pickImageResolution(supported: List<String>, target: Double): String {
+    internal fun pickImageResolution(supported: List<String>, target: Double): String {
         val wantsWide = target >= 1.0
         val sameOrientation = supported.filter { s -> (sizeAspect(s) >= 1.0) == wantsWide }
         val pool = sameOrientation.ifEmpty { supported }

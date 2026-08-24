@@ -85,13 +85,13 @@ class AuthService @Inject constructor(
     }
 
     /** PBKDF2 哈希，输出 "iterations$b64(dk)" */
-    private fun hash(password: String, salt: ByteArray): String {
+    internal fun hash(password: String, salt: ByteArray): String {
         val spec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH)
         val derived = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
         return toB64(derived)
     }
 
-    private fun toB64(bytes: ByteArray): String = java.util.Base64.getEncoder().encodeToString(bytes)
+    internal fun toB64(bytes: ByteArray): String = java.util.Base64.getEncoder().encodeToString(bytes)
 
-    private fun fromB64(s: String): ByteArray = java.util.Base64.getDecoder().decode(s)
+    internal fun fromB64(s: String): ByteArray = java.util.Base64.getDecoder().decode(s)
 }
