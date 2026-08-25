@@ -188,4 +188,36 @@ class RunServicePureFunctionsTest {
     fun `titleFor second index appends number`() {
         assertEquals("gpt-4o 2", titleFor("gpt-4o", 1))
     }
+
+    // ============ coversOriginal（优化结果与原意重叠度校验，与 RunService 内实现一致） ============
+
+    private fun coversOriginal(optimized: String, original: String): Boolean {
+        if (original.isBlank()) return true
+        val tokens = original.split(Regex("[，。！？、；：\\s,.!?;:]+")).filter { it.length >= 2 }
+        if (tokens.isEmpty()) return true
+        val hit = tokens.count { t -> optimized.contains(t) }
+        return hit.toFloat() / tokens.size >= 0.6f
+    }
+
+    @Test
+    fun `coversOriginal keeps fully preserved original`() {
+        assertTrue(coversOriginal("一只白猫坐在窗台上晒太阳", "一只白猫坐在窗台上晒太阳"))
+    }
+
+    @Test
+    fun `coversOriginal accepts light polish keeping key elements`() {
+        // 优化结果保留原文所有关键词元（赛博狐狸/霓虹灯/黑夜）→ 通过
+        assertTrue(coversOriginal("赛博狐狸在霓虹灯下的黑夜中奔跑", "赛博狐狸，霓虹灯，黑夜"))
+    }
+
+    @Test
+    fun `coversOriginal rejects prompt rewritten away from original`() {
+        // 模型把"白猫晒太阳"改写成无关的"黑色机器狼"，判定脱离原意 → 回退原文
+        assertTrue(!coversOriginal("黑色森林中的机械狼", "一只白猫坐在窗台上晒太阳"))
+    }
+
+    @Test
+    fun `coversOriginal rejects blank optimized result`() {
+        assertTrue(!coversOriginal("", "一只白猫"))
+    }
 }

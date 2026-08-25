@@ -4,11 +4,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import com.tapcreator.app.data.prefs.SettingsStore
 import com.tapcreator.app.ui.nav.TapcreatorNav
 import com.tapcreator.app.ui.theme.TapcreatorRootTheme
@@ -31,13 +26,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** 依据是否已有本地会话决定起始路由（未登录→认证，已登录→首页） */
+/** 无需登录：直接以首页为起始路由（账号/认证流程已移除） */
 @Composable
 private fun MainNav(settings: SettingsStore) {
-    var startRoute by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
-        startRoute = if (settings.token() != null) "home" else "auth"
-    }
-    val route = startRoute ?: return
-    TapcreatorNav(startRoute = route)
+    TapcreatorNav(startRoute = "home")
 }

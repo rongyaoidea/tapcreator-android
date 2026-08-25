@@ -5,6 +5,7 @@ import com.tapcreator.app.data.db.SessionEntity
 import com.tapcreator.app.data.db.UserEntity
 import com.tapcreator.app.data.model.AuthFailedException
 import com.tapcreator.app.data.model.TapcreatorException
+import com.tapcreator.app.data.prefs.SettingsStore
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
@@ -20,13 +21,41 @@ import javax.inject.Singleton
 @Singleton
 class AuthService @Inject constructor(
     private val db: AppDatabase,
+    private val settings: SettingsStore,
 ) {
     companion object {
         private const val PBKDF2_ITERATIONS = 120_000
         private const val KEY_LENGTH = 256
+        /** 无需登录模式下自动创建的本机匿名用户名 */
+        private const val ANONYMOUS_USERNAME = "本地用户"
     }
 
     private val random = SecureRandom()
+
+    /**
+     * 无需登录：确保存在本机匿名会话，App 启动即可用（数据仍按会话归属隔离）。
+     * - 已有有效 token 直接复用；
+     * - 否则创建/复用内置「本地用户」并签发会话，落库落 DataStore。
+     */
+    suspend fun ensureAnonymousSession(): String {
+        val existing = settings.token()
+        if (existing != null && sessionUserId(existing) != null) return existing
+        var user = db.userDao().byUsername(ANONYMOUS_USERNAME)
+        if (user == null) {
+            user = UserEntity(
+                id = "local",
+                username = ANONYMOUS_USERNAME,
+                email = null,
+                passwordHash = "",
+                salt = "",
+                createdAt = System.currentTimeMillis(),
+            )
+            db.userDao().insert(user)
+        }
+        val session = createSession(user.id)
+        settings.saveSession(session.token, user.id)
+        return session.token
+    }
 
     /** 注册并返回带 token 的会话 */
     suspend fun register(username: String, password: String): SessionEntity {

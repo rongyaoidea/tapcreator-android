@@ -55,7 +55,10 @@ class ConversationListViewModel @Inject constructor(
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
-        viewModelScope.launch { tokenFlow.value = settings.token() }
+        viewModelScope.launch {
+            // 无需登录：自动建立/复用本机匿名会话，首页会话列表直接可用
+            tokenFlow.value = auth.ensureAnonymousSession()
+        }
     }
 
     fun createConversation(onCreated: (String) -> Unit) {

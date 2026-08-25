@@ -344,6 +344,16 @@ $styleBlock
             } catch (e: Exception) {
                 // 单轮发生未预期异常：回灌给模型换个方案，避免整轮 Agent 直接失败
                 // 网络异常（SocketException/连接中断等）给用户友好提示而非裸异常名
+                // 连续执行异常计数：超过阈值后不再继续，直接终止避免死循环
+                st.actionErrorCount++
+                if (st.actionErrorCount >= 3) {
+                    ctx.emitTrace()
+                    writeAssistantSummary(ctx.conversationId, "连续多次执行异常（${e.message ?: "未知错误"}），已终止本轮。请检查网络/配置后重试。")
+                    st.summaryWritten = true
+                    st.finished = true
+                    st.forcedStop = true
+                    break
+                }
                 val friendlyMsg = when {
                     e is java.net.SocketException || e is java.io.IOException ->
                         "网络连接中断（${e.message ?: "连接被对端关闭"}），可能是上游超时或网络不稳定。请重试或检查网络。"
@@ -371,6 +381,8 @@ $styleBlock
         var forcedStop: Boolean = false,
         var summaryWritten: Boolean = false,
         var recoveries: Int = 0,
+        /** 执行异常连续计数：网络/DNS 等持续错误不会自己恢复，超限后强制终止，避免死循环 */
+        var actionErrorCount: Int = 0,
         var produced: HashMap<Int, String> = HashMap(),
         var outputCards: MutableList<String> = mutableListOf(),
         var trace: MutableList<ChatMessage> = mutableListOf(),

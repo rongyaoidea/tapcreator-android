@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import android.content.Context
 import android.net.Uri
 import com.tapcreator.app.backend.agent.AgentBrain
+import com.tapcreator.app.backend.auth.AuthService
 import com.tapcreator.app.backend.media.MediaStore
 import com.tapcreator.app.backend.model.ModelRouter
 import com.tapcreator.app.backend.service.RunService
@@ -58,6 +59,7 @@ class ChatViewModel @Inject constructor(
     private val runService: RunService,
     private val brain: AgentBrain,
     private val media: MediaStore,
+    private val auth: AuthService,
     @ApplicationContext private val appContext: Context,
     savedState: SavedStateHandle,
 ) : ViewModel() {
@@ -71,7 +73,8 @@ class ChatViewModel @Inject constructor(
             conversationTitle = runCatching {
                 db.conversationDao().byId(conversationId)?.title?.takeIf { it.isNotBlank() }
             }.getOrNull() ?: conversationId
-            token = settings.token()
+            // 无需登录：自动建立/复用本机匿名会话（首次启动自动创建，用户无感）
+            token = auth.ensureAnonymousSession()
             val models = try {
                 router.models(MediaKind.IMAGE)
             } catch (e: Exception) {
@@ -692,6 +695,9 @@ class ChatViewModel @Inject constructor(
                         if (optPrompt.isNotBlank() && optPrompt != prompt) {
                             // 优化成功且内容变化：标记增强，落卡时写 promptEnhanced 供预览标识
                             lastRequestBase = lastRequestBase!!.copy(prompt = optPrompt, promptEnhanced = true)
+                        } else if (optPrompt.isNotBlank()) {
+                            // 优化未改变内容或未通过原意校验（防止模型脱离原意乱改）
+                            toast("提示词优化未通过原意校验，已使用原文")
                         }
                     }
                     .onFailure { e -> toast("提示词优化失败，已使用原文：${e.message}") }

@@ -297,10 +297,10 @@ private fun CanvasToolbar(
     onAutoLayout: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val kinds = listOf<MediaKind?>(null, MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.AUDIO, MediaKind.TEXT)
+    val kinds = listOf<MediaKind?>(null, MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.AUDIO)
     val labels = mapOf<MediaKind?, String>(
         null to "全部", MediaKind.IMAGE to "图", MediaKind.VIDEO to "视频",
-        MediaKind.AUDIO to "音频", MediaKind.TEXT to "文本",
+        MediaKind.AUDIO to "音频",
     )
     Row(
         modifier = Modifier

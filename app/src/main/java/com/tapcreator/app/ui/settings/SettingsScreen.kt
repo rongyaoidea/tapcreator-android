@@ -53,10 +53,10 @@ private val KIND_HINT = mapOf(
     MediaKind.AUDIO to "如 tts-1、whisper",
 )
 
-/** 设置 —— 模型渠道与密钥管理，按 文本/生图/视频/音频 分类（整页可滚动） */
+/** 设置 —— 外观（深色模式）+ 模型渠道与密钥管理，按 文本/生图/视频/音频 分类（整页可滚动）。
+ *  底部导航固定 tab 页：无返回按钮，由全局底部栏切换。 */
 @Composable
 fun SettingsScreen(
-    onBack: () -> Unit,
     vm: SettingsViewModel = hiltViewModel(),
 ) {
     val byKind by vm.modelsByKind.collectAsState()
@@ -77,9 +77,10 @@ fun SettingsScreen(
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) { Text("←") }
-            Text("设置 · 模型渠道", style = MaterialTheme.typography.titleMedium)
+            Text("设置", style = MaterialTheme.typography.titleMedium)
         }
+
+        AppearanceSection(vm)
 
         vm.feedback?.let { fb ->
             Text(
@@ -106,6 +107,36 @@ fun SettingsScreen(
         AlpineSandboxSection(vm)
 
         SearchApiSection(vm)
+    }
+}
+
+/** 外观设置区：深色模式开关（自原「我的」页面迁移而来） */
+@Composable
+private fun AppearanceSection(vm: SettingsViewModel) {
+    val dark by vm.darkTheme.collectAsState()
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+        Text(
+            text = "外观",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding),
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Dimens.PagePadding, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("深色模式", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = "开启后整个应用使用深色配色",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = dark, onCheckedChange = vm::setDarkTheme)
+        }
     }
 }
 

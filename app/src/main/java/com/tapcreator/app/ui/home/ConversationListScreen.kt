@@ -17,17 +17,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -52,54 +46,42 @@ fun ConversationListScreen(
     onNewChat: (String) -> Unit,
     onSettings: () -> Unit,
     onLibrary: () -> Unit,
-    onProfile: () -> Unit,
 ) {
     val conversations by vm.conversations.collectAsState()
-    val user by vm.user.collectAsState()
     val needsSetup by vm.needsSetup.collectAsState()
     // 进入动效：淡入 + 轻微上移，营造品牌入场氛围
     var revealed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { revealed = true }
 
-    Scaffold(bottomBar = { HomeBottomBar(onSettings, onLibrary, onProfile) }) { pad ->
-        AnimatedVisibility(
-            visible = revealed,
-            enter = fadeIn(tween(280)) + slideInVertically(tween(280)) { it / 12 },
-            modifier = Modifier.fillMaxSize(),
-        ) {
-        Column(
+    AnimatedVisibility(
+        visible = revealed,
+        enter = fadeIn(tween(280)) + slideInVertically(tween(280)) { it / 12 },
+        modifier = Modifier.fillMaxSize(),
+    ) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(bottom = 24.dp),
+    ) {
+        // 头部
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(pad)
-                .padding(bottom = 24.dp),
+                .fillMaxWidth()
+                .padding(Dimens.PagePadding),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 头部
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(Dimens.PagePadding),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "tapcreator",
-                        style = MaterialTheme.typography.headlineLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    user?.let {
-                        Text(
-                            text = it.username,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
-                }
-                Button(onClick = { onNewChat("") }) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Text(" 新建项目", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 4.dp))
-                }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "tapcreator",
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
+            Button(onClick = { onNewChat("") }) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Text(" 新建项目", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 4.dp))
+            }
+        }
 
             HorizontalDivider(modifier = Modifier.padding(horizontal = Dimens.PagePadding), color = MaterialTheme.colorScheme.outlineVariant)
 
@@ -164,8 +146,7 @@ fun ConversationListScreen(
                 Text(" 新建项目", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 4.dp))
             }
         }
-        } // AnimatedVisibility
-    }
+    } // AnimatedVisibility
 }
 
 @Composable
@@ -186,47 +167,6 @@ private fun ConversationRow(conv: ConversationEntity, onClick: () -> Unit) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 2.dp),
-        )
-    }
-}
-
-@Composable
-private fun HomeBottomBar(
-    onSettings: () -> Unit,
-    onLibrary: () -> Unit,
-    onProfile: () -> Unit,
-) {
-    // 配色对齐 app 主题：暖纸底/深灰底 + 橙色选中态，不用 Material3 默认紫色
-    NavigationBar(
-        containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-    ) {
-        NavigationBarItem(
-            selected = false,
-            onClick = onLibrary,
-            icon = { Icon(Icons.Default.Home, contentDescription = "素材库", tint = MaterialTheme.colorScheme.primary) },
-            label = { Text("素材库", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-            colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
-                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-            ),
-        )
-        NavigationBarItem(
-            selected = false,
-            onClick = onSettings,
-            icon = { Icon(Icons.Default.Settings, contentDescription = "设置", tint = MaterialTheme.colorScheme.primary) },
-            label = { Text("设置", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-            colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
-                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-            ),
-        )
-        NavigationBarItem(
-            selected = false,
-            onClick = onProfile,
-            icon = { Icon(Icons.Default.AccountCircle, contentDescription = "我的", tint = MaterialTheme.colorScheme.primary) },
-            label = { Text("我的", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-            colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
-                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-            ),
         )
     }
 }

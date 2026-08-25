@@ -52,6 +52,14 @@ class SettingsViewModel @Inject constructor(
     var agentStyle by mutableStateOf("")
         private set
 
+    /** 深色模式偏好（自原「我的」页面迁移到设置页） */
+    val darkTheme: StateFlow<Boolean> = settings.darkTheme
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setDarkTheme(enabled: Boolean) {
+        viewModelScope.launch { settings.setDarkTheme(enabled) }
+    }
+
     fun toggleAgentMemory(enabled: Boolean) {
         agentMemoryEnabled = enabled
         viewModelScope.launch { settings.setAgentMemoryEnabled(enabled) }

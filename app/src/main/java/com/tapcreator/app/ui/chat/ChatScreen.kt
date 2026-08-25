@@ -1,6 +1,7 @@
 package com.tapcreator.app.ui.chat
 
 import android.widget.Toast
+import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -11,6 +12,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -72,6 +74,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.min
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -275,6 +278,9 @@ fun ChatScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    // 内容超高时滚动查看：键盘弹出后可用高度变小，无滚动时输入框会被输入法遮住
+                    .verticalScroll(rememberScrollState())
+                    .imePadding()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             ) {
                 Text(
@@ -1298,8 +1304,8 @@ private fun MediaPreview(
 ) {
     val file = card.mediaPath?.let { File(it) }?.takeIf { it.exists() }
         ?: card.previewPath?.let { File(it) }?.takeIf { it.exists() }
-    // 提示词区可折叠：默认收起只显一行，点击展开全文，减少视觉噪音
-    var promptExpanded by remember { mutableStateOf(false) }
+    // 提示词区可折叠：增强卡默认展开全文直接看到优化后的提示词，普通卡默认收起
+    var promptExpanded by remember { mutableStateOf(card.promptEnhanced) }
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(12.dp),
@@ -1335,25 +1341,41 @@ private fun MediaPreview(
                         Icon(Icons.Default.Close, contentDescription = "关闭", tint = Color.White)
                     }
                 }
-                // 预览区：占主体，图片/视频自适应铺满
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f, fill = true),
+                // 预览区：图片按原图宽高比自适应大小（框刚好放下图片，不再占满整屏）；
+                // 视频保持 16:9 播放器。
+                BoxWithConstraints(
+                    modifier = Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.Center,
                 ) {
                     when {
                         file != null && card.kind == MediaKind.VIDEO -> VideoPlayer(file = file)
-                        file != null && card.kind == MediaKind.IMAGE -> AsyncImage(
-                            model = file,
-                            contentDescription = card.title,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit,
-                        )
+                        file != null && card.kind == MediaKind.IMAGE -> {
+                            // 只解码图片边界拿宽高（不加载整图），用于按图片比例缩放预览框
+                            val bounds = remember(file) {
+                                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                runCatching { BitmapFactory.decodeFile(file.absolutePath, opts) }
+                                if (opts.outWidth > 0 && opts.outHeight > 0) opts.outWidth to opts.outHeight else null
+                            }
+                            val ratio = bounds?.let { it.first.toFloat() / it.second.toFloat() } ?: 1f
+                            // 宽度不超过可用宽、高度不超过 480dp，同时保持图片宽高比，让框刚好贴合图片
+                            val previewW = min(maxWidth, 480.dp * ratio)
+                            val previewH = if (ratio > 0f) previewW / ratio else 480.dp
+                            Box(
+                                modifier = Modifier.size(previewW, previewH),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                AsyncImage(
+                                    model = file,
+                                    contentDescription = card.title,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Fit,
+                                )
+                            }
+                        }
                         file == null -> Text("文件不存在", color = Color.White, modifier = Modifier.padding(16.dp))
                     }
                 }
-                // 提交提示词区：可折叠，默认收起只显标题行
+                // 提交提示词区：文案区分——经增强的卡展示「优化后的提示词」，普通卡展示「提交提示词」
                 if (card.content.isNotBlank() && card.kind != MediaKind.TEXT) {
                     Surface(
                         modifier = Modifier
@@ -1368,7 +1390,7 @@ private fun MediaPreview(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    text = "提交提示词",
+                                    text = if (card.promptEnhanced) "优化后的提示词" else "提交提示词",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = Color.White.copy(alpha = 0.7f),
                                     modifier = Modifier.weight(1f),

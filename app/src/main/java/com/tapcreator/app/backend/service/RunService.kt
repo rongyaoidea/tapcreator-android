@@ -448,6 +448,8 @@ class RunService @Inject constructor(
     ) {
         // 文本模型为产出卡起名：避免视频卡标题退化成模型 id；失败回退模型名
         val videoTitle = suggestTitle(run.prompt, model.name, 0)
+        // 落库坐标同样错位铺开，避免视频卡回到 (0,0) 盖住已有卡片
+        val (x, y) = nextCardPosition(run.conversationId)
         val card = CardEntity(
             id = UUID.randomUUID().toString(),
             runId = run.id,
@@ -459,8 +461,8 @@ class RunService @Inject constructor(
             previewPath = null,
             mediaPath = mediaPath,
             status = RunStatus.COMPLETED,
-            x = 0f,
-            y = 0f,
+            x = x,
+            y = y,
             promptEnhanced = promptEnhanced,
         )
         db.cardDao().insert(card)
@@ -627,6 +629,18 @@ class RunService @Inject constructor(
         return ResolvedRefs(texts, images, audio, imageFiles, videoFiles)
     }
 
+    /**
+     * 为落库的成品卡计算画布坐标：沿用 startDraft 的错位铺开规则（24 + 序号*170，每行 6 列）。
+     * 修复「多张成品卡全部堆叠在 (0,0)，后生成的卡把先前的卡完全盖住」的问题。
+     * 每落一张卡前实时查询当前会话卡片数，保证新卡坐标与已有卡不重叠。
+     */
+    private suspend fun nextCardPosition(conversationId: String): Pair<Float, Float> {
+        val count = runCatching { db.cardDao().listByConversation(conversationId) }
+            .getOrNull().orEmpty().size
+        val col = 6
+        return (24f + (count % col) * 170f) to (24f + (count / col) * 170f)
+    }
+
     private suspend fun persistOneCard(
         run: AgentRunEntity,
         model: com.tapcreator.app.data.db.ModelOptionEntity,
@@ -642,6 +656,8 @@ class RunService @Inject constructor(
             media.persistFrom(run.conversationId, run.id, result, cardTitle, result.kind)
         } else null
 
+        // 成品卡落库时按已有卡片数错位铺开，避免所有卡堆叠在 (0,0) 相互遮挡
+        val (x, y) = nextCardPosition(run.conversationId)
         val card = CardEntity(
             id = UUID.randomUUID().toString(),
             runId = run.id,
@@ -654,8 +670,8 @@ class RunService @Inject constructor(
             previewPath = asset?.previewPath,
             mediaPath = asset?.mediaPath,
             status = RunStatus.COMPLETED,
-            x = 0f,
-            y = 0f,
+            x = x,
+            y = y,
             promptEnhanced = promptEnhanced,
         )
         db.cardDao().insert(card)
@@ -769,8 +785,8 @@ class RunService @Inject constructor(
     }
 
     /**
-     * 用默认文本模型优化用户的创作提示词：把口语化诉求润色成结构清晰、可直接用于
-     * 图片/视频/音频生成的提示词。未配置文本模型/调用失败时返回原文，不阻塞生成。
+     * 用默认文本模型优化用户的创作提示词：在【严格保留用户原意】的前提下做轻微润色。
+     * 优化后校验与原意重叠度，若模型改造过度则回退原文，不阻塞生成。
      * 使用已配置的文本模型（无需额外 auth 验证，直接用 router 获取可用模型）。
      */
     suspend fun optimizePrompt(prompt: String): String {
@@ -787,14 +803,27 @@ class RunService @Inject constructor(
                 listOf(
                     ChatMessage(
                         role = "system",
-                        content = "你是一位专业的 AIGC 提示词工程师，精通文生图/文生视频/文生音频。请把用户的创作诉求优化为结构清晰、画面感强、可直接用于生成的提示词：保留核心意图，补充关键主体、环境、光影、风格与镜头/节奏细节；语气平实，避免自我解释、编号或任何多余文字。只输出优化后的提示词本身。",
+                        content = "你是 AIGC 提示词的精调助手。下面的用户提示词将直接用于图片/视频生成，你的唯一任务是【保留用户原意，只做轻微润色】。\n硬性规则：\n1. 用户原文中的每一个主体、动作、场景、环境、风格、光影、色调等要素都必须完整保留，禁止删改、替换、扭曲原意；你写出的优化结果必须能让用户一眼认出这就是自己的话。\n2. 禁止凭空添加原文没有的关键元素：不得新增主体、不得改变人物/物体/场景，最多补充少量与原文同方向、不冲突的修饰词（如质感、细节程度）。\n3. 禁止改变画面的明暗、色彩与整体调性：不得引入与原文相反的描述（尤其禁止擅自加入“黑色/黑暗/阴郁”等暗色调），也不得删除或弱化原文明确指定的色调与风格。\n4. 只允许重排语序、补全残缺语法、把啰嗦口语整理通顺、把含混表述改得更具体明确。\n5. 若原文已经清晰可直接用于生成，或你无法在不动原意的前提下润色，请逐字原样输出原文。\n6. 只输出处理后的提示词本身，不要任何解释、编号、前后缀或多余文字。",
                     ),
                     ChatMessage(role = "user", content = prompt),
                 ),
                 null,
             )
         }.getOrNull() ?: return prompt.trim()
-        return result.trim().trim('“', '”', '"', '。').ifBlank { prompt.trim() }
+        val optimized = result.trim().trim('“', '”', '"', '。')
+        // 防胡思乱想兜底：只保留与原文重叠度足够高的优化结果（原文字符必须全部或近乎全部保留），
+        // 否则判定为模型脱离原意改写，直接回退用户原文。
+        return if (optimized.isBlank() || !coversOriginal(optimized, prompt)) prompt.trim() else optimized
+    }
+
+    /** 判断优化结果是否仍完整保留用户原意：原文中的每个连续词元都应能在结果中找到 */
+    private fun coversOriginal(optimized: String, original: String): Boolean {
+        if (original.isBlank()) return true
+        val tokens = original.split(Regex("[，。！？、；：\\s,.!?;:]+")).filter { it.length >= 2 }
+        if (tokens.isEmpty()) return true
+        val hit = tokens.count { t -> optimized.contains(t) }
+        // 至少保留 60% 的关键词元，且原文开头/结尾的关键长词元未丢失
+        return hit.toFloat() / tokens.size >= 0.6f
     }
 
     /**

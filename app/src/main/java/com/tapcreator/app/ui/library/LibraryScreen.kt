@@ -60,10 +60,10 @@ private val SENTINEL_ALL: String? = null
 /** 特殊选中态：未归档 */
 private const val SENTINEL_UNASSIGNED = "__unassigned__"
 
-/** 素材库 —— 素材/角色的多视角资产，支持上传、文件夹分类、角色/产品身份绑定（M6） */
+/** 素材库 —— 素材/角色的多视角资产，支持上传、文件夹分类、角色/产品身份绑定（M6）。
+ *  底部导航固定 tab 页：无返回按钮，由全局底部栏切换。 */
 @Composable
 fun LibraryScreen(
-    onBack: () -> Unit,
     vm: LibraryViewModel = hiltViewModel(),
 ) {
     val assets by vm.assets.collectAsState()
@@ -121,7 +121,6 @@ fun LibraryScreen(
                     .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = onBack) { Text("←") }
                 Text("素材库", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 TextButton(onClick = { pickLauncher.launch("image/*,video/*") }) { Text("上传") }
                 TextButton(onClick = { showNewFolder = true }) { Text("新建夹") }
