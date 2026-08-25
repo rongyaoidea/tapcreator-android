@@ -5,9 +5,16 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -41,6 +49,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -54,6 +63,11 @@ import com.tapcreator.app.data.db.CardEntity
 import com.tapcreator.app.data.db.CardLinkEntity
 import com.tapcreator.app.data.model.MediaKind
 import com.tapcreator.app.data.model.RunStatus
+import com.tapcreator.app.ui.theme.kindColor
+import com.tapcreator.app.ui.theme.kindColorStatic
+import com.tapcreator.app.ui.theme.kindIcon
+import com.tapcreator.app.ui.theme.pressSpring
+import com.tapcreator.app.ui.theme.enterAnimation
 import java.io.File
 
 /** 画布节点窗宽（dp） */
@@ -91,6 +105,9 @@ fun CanvasWorkspace(
 ) {
     val density = LocalDensity.current
     val nodeW = with(density) { NODE_W.toPx() }
+    // 主题模式：供 Canvas drawScope 内 kindColorStatic 使用（drawScope 不能调 @Composable）
+    // 从 colorScheme.background 亮度推断，与用户手动设置的主题偏好一致
+    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     // 画布视口尺寸（px，非缩放坐标系）
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     var scale by remember { mutableStateOf(1f) }
@@ -167,14 +184,14 @@ fun CanvasWorkspace(
                 }
                 drawPath(
                     path = path,
-                    color = kindColor(from.kind).copy(alpha = 0.55f),
+                    color = kindColorStatic(from.kind, dark).copy(alpha = 0.55f),
                     style = Stroke(width = 2f),
                 )
             }
         }
 
         // 节点
-        for (card in cards) {
+        for ((idx, card) in cards.withIndex()) {
             if (filterKind != null && card.kind != filterKind) continue
             val drag = drags[card.id] ?: Offset.Zero
             val selected = card.id in selectedIds
@@ -183,6 +200,7 @@ fun CanvasWorkspace(
                 card = card,
                 selected = selected,
                 isDraft = isDraft,
+                enterDelayMs = idx * 50,
                 basePx = basePos(card) + drag * density.density,
                 scale = scale,
                 pan = pan,
@@ -264,9 +282,9 @@ fun CanvasWorkspace(
                 .padding(12.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            ZoomButton("＋") { scale = (scale * 1.25f).coerceAtMost(MAX_SCALE) }
-            ZoomButton("－") { scale = (scale / 1.25f).coerceAtLeast(MIN_SCALE) }
-            ZoomButton("⌖") {
+            ZoomButton("zoom_in") { scale = (scale * 1.25f).coerceAtMost(MAX_SCALE) }
+            ZoomButton("zoom_out") { scale = (scale / 1.25f).coerceAtLeast(MIN_SCALE) }
+            ZoomButton("reset") {
                 scale = 1f
                 pan = Offset.Zero
             }
@@ -276,15 +294,35 @@ fun CanvasWorkspace(
 
 @Composable
 private fun ZoomButton(text: String, onClick: () -> Unit) {
+    val icon = when (text) {
+        "zoom_in" -> Icons.Filled.Add
+        "zoom_out" -> Icons.Filled.Remove
+        "reset" -> Icons.Filled.CenterFocusStrong
+        else -> Icons.Filled.Add
+    }
+    val desc = when (text) {
+        "zoom_in" -> "放大"
+        "zoom_out" -> "缩小"
+        "reset" -> "重置视图"
+        else -> text
+    }
+    val interactionSource = androidx.compose.runtime.remember { MutableInteractionSource() }
     Surface(
         onClick = onClick,
-        modifier = Modifier.size(40.dp),
+        modifier = Modifier
+            .size(40.dp)
+            .pressSpring(interactionSource),
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
         tonalElevation = 3.dp,
+        interactionSource = interactionSource,
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Text(text, style = MaterialTheme.typography.labelLarge)
+            Icon(
+                imageVector = icon,
+                contentDescription = desc,
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
         }
     }
 }
@@ -348,6 +386,7 @@ private fun CanvasNode(
     card: CardEntity,
     selected: Boolean,
     isDraft: Boolean,
+    enterDelayMs: Int = 0,
     basePx: Offset,
     scale: Float,
     pan: Offset,
@@ -401,14 +440,24 @@ private fun CanvasNode(
             tonalElevation = if (selected) 6.dp else 2.dp,
             shadowElevation = if (selected) 6.dp else 2.dp,
         ) {
-            CanvasNodeContent(card = card, selected = selected, isDraft = isDraft)
+            CanvasNodeContent(
+                card = card,
+                selected = selected,
+                isDraft = isDraft,
+                modifier = enterAnimation(delayMs = enterDelayMs),
+            )
         }
     }
 }
 
 @Composable
-private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Boolean) {
-    Column(modifier = Modifier.fillMaxWidth()) {
+private fun CanvasNodeContent(
+    card: CardEntity,
+    selected: Boolean,
+    isDraft: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
         // 预览区
         Box(
             modifier = Modifier
@@ -449,9 +498,11 @@ private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Bool
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            Text(
-                                text = "⚠️",
-                                style = MaterialTheme.typography.displaySmall,
+                            Icon(
+                                imageVector = Icons.Filled.Warning,
+                                contentDescription = "失败",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(28.dp),
                             )
                             Text(
                                 text = "生成失败",
@@ -459,15 +510,11 @@ private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Bool
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
-                        else -> Text(
-                            text = when (card.kind) {
-                                MediaKind.IMAGE -> "🖼"
-                                MediaKind.VIDEO -> "🎬"
-                                MediaKind.AUDIO -> "♫"
-                                MediaKind.TEXT -> "🅃"
-                                else -> "▧"
-                            },
-                            style = MaterialTheme.typography.displaySmall,
+                        else -> Icon(
+                            imageVector = kindIcon(card.kind),
+                            contentDescription = card.kind.name,
+                            tint = kindColor(card.kind),
+                            modifier = Modifier.size(28.dp),
                         )
                     }
                 }
@@ -481,15 +528,11 @@ private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Bool
                     contentDescription = card.title,
                     modifier = Modifier.fillMaxSize(),
                 )
-                else -> Text(
-                    text = when (card.kind) {
-                        MediaKind.IMAGE -> "🖼"
-                        MediaKind.VIDEO -> "🎬"
-                        MediaKind.AUDIO -> "♫"
-                        MediaKind.TEXT -> "🅃"
-                        else -> "▧"
-                    },
-                    style = MaterialTheme.typography.headlineMedium,
+                else -> Icon(
+                    imageVector = kindIcon(card.kind),
+                    contentDescription = card.kind.name,
+                    tint = kindColor(card.kind),
+                    modifier = Modifier.size(32.dp),
                 )
             }
         }
@@ -514,10 +557,16 @@ private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Bool
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
-            // 增强提示词角标：非 draft 成品卡且 promptEnhanced 时显示
+            // 增强提示词角标：非 draft 成品卡且 promptEnhanced 时显示（矢量图标替代 emoji）
             if (!isDraft && card.promptEnhanced) {
+                Icon(
+                    imageVector = Icons.Filled.AutoAwesome,
+                    contentDescription = "增强",
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(14.dp),
+                )
                 Text(
-                    text = "⚡增强",
+                    text = "增强",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.tertiary,
                 )
@@ -537,11 +586,4 @@ private fun CanvasNodeContent(card: CardEntity, selected: Boolean, isDraft: Bool
     }
 }
 
-/** 生成类型 → 主题色 */
-private fun kindColor(kind: MediaKind): Color = when (kind) {
-    MediaKind.IMAGE -> Color(0xFF7C4DFF)
-    MediaKind.VIDEO -> Color(0xFF00B8D4)
-    MediaKind.AUDIO -> Color(0xFFFFB300)
-    MediaKind.TEXT -> Color(0xFF66BB6A)
-    else -> Color(0xFF90A4AE)
-}
+// kindColor 已迁移至 ui/theme/Theme.kt，从主题读取并自动适配深色模式

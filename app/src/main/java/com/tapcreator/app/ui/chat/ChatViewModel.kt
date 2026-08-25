@@ -538,6 +538,20 @@ class ChatViewModel @Inject constructor(
         markStateChanged()
     }
 
+    /** 一键取消所有参考引用（卡片+素材），同步清理画布连线 */
+    fun clearAllReferences() {
+        // 同步删除画布上 draft 卡的 reference 连线（与 toggleReference 一致）
+        val draftId = editingDraftId
+        if (draftId != null) {
+            selectedReferenceCards.forEach { card ->
+                unlinkReference(card.id, draftId)
+            }
+        }
+        selectedReferenceCards = emptyList()
+        selectedReferenceAssets = emptyList()
+        markStateChanged()
+    }
+
     /** 选中/取消一个跨会话素材作为参考（按 mediaPath 判等） */
     fun toggleReferenceAsset(asset: AssetEntity) {
         selectedReferenceAssets = if (selectedReferenceAssets.any { it.mediaPath != null && it.mediaPath == asset.mediaPath }) {
@@ -688,15 +702,18 @@ class ChatViewModel @Inject constructor(
                 }
             }
             // Agent 仍执行时不消费，避免把「进行中批次」当作已完成产出误判。
-            // 提示词优化：开启时先用默认文本模型润色，失败则回退原文继续生成
+            // 提示词优化：开启时按生成类型分发不同优化器
             if (opt) {
-                runCatching { runService.optimizePrompt(prompt) }
+                val optimizeFn = if (selectedKind == MediaKind.VIDEO) {
+                    runCatching { runService.optimizeVideoPrompt(prompt) }
+                } else {
+                    runCatching { runService.optimizePrompt(prompt) }
+                }
+                optimizeFn
                     .onSuccess { optPrompt ->
                         if (optPrompt.isNotBlank() && optPrompt != prompt) {
-                            // 优化成功且内容变化：标记增强，落卡时写 promptEnhanced 供预览标识
                             lastRequestBase = lastRequestBase!!.copy(prompt = optPrompt, promptEnhanced = true)
                         } else if (optPrompt.isNotBlank()) {
-                            // 优化未改变内容或未通过原意校验（防止模型脱离原意乱改）
                             toast("提示词优化未通过原意校验，已使用原文")
                         }
                     }

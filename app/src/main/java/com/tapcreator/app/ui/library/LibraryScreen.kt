@@ -86,6 +86,8 @@ fun LibraryScreen(
     var showNewFolder by remember { mutableStateOf(false) }
     // 移动弹窗
     var movingAsset by remember { mutableStateOf<AssetEntity?>(null) }
+    // 删除素材确认
+    var deletingAsset by remember { mutableStateOf<AssetEntity?>(null) }
     // 删除文件夹确认
     var deletingFolder by remember { mutableStateOf<AssetFolderEntity?>(null) }
 
@@ -157,6 +159,7 @@ fun LibraryScreen(
                             },
                             onSave = { onSave(asset) },
                             onMove = { movingAsset = asset },
+                            onDelete = { deletingAsset = asset },
                         )
                     }
                 }
@@ -179,6 +182,21 @@ fun LibraryScreen(
                 movingAsset = null
             },
             onDismiss = { movingAsset = null },
+        )
+    }
+
+    deletingAsset?.let { asset ->
+        AlertDialog(
+            onDismissRequest = { deletingAsset = null },
+            title = { Text("删除素材") },
+            text = { Text("确定删除「${asset.title}」吗？磁盘文件和记录将一并删除，不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteAsset(asset)
+                    deletingAsset = null
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { deletingAsset = null }) { Text("取消") } },
         )
     }
 
@@ -338,20 +356,20 @@ private fun MoveAssetDialog(
 }
 
 private fun folderBadge(kind: String): String = when (kind) {
-    "role" -> "👤 "
-    "product" -> "📦 "
+    "role" -> "[角色] "
+    "product" -> "[产品] "
     else -> ""
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AssetCell(asset: AssetEntity, onShare: () -> Unit, onSave: () -> Unit, onMove: () -> Unit) {
+private fun AssetCell(asset: AssetEntity, onShare: () -> Unit, onSave: () -> Unit, onMove: () -> Unit, onDelete: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Box(modifier = Modifier.aspectRatio(1f)) {
         Box(
             modifier = Modifier
                 .aspectRatio(1f)
-                // 单击：分享；长按：打开操作菜单（分享/保存/移动）
+                // 单击：分享；长按：打开操作菜单（分享/保存/移动/删除）
                 .combinedClickable(onClick = onShare, onLongClick = { menu = true }),
         ) {
             val path = asset.previewPath ?: asset.mediaPath
@@ -383,6 +401,10 @@ private fun AssetCell(asset: AssetEntity, onShare: () -> Unit, onSave: () -> Uni
             DropdownMenuItem(
                 text = { Text("移动到文件夹") },
                 onClick = { menu = false; onMove() },
+            )
+            DropdownMenuItem(
+                text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                onClick = { menu = false; onDelete() },
             )
         }
     }

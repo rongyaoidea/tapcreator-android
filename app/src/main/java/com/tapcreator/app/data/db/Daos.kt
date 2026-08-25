@@ -75,6 +75,9 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM messages WHERE conversationId = :conversationId")
+    suspend fun deleteByConversation(conversationId: String)
 }
 
 @Dao
@@ -229,6 +232,9 @@ interface ModelOptionDao {
 
     @Query("DELETE FROM model_options WHERE channelId = :channelId")
     suspend fun deleteByChannel(channelId: String)
+
+    @Query("UPDATE model_options SET kind = :kind WHERE id = :id")
+    suspend fun setKind(id: String, kind: String)
 }
 
 @Dao
@@ -286,6 +292,9 @@ interface CardDao {
     /** 无任何引用时删除：物理删除数据行（磁盘文件由调用方清理） */
     @Query("DELETE FROM cards WHERE id = :id")
     suspend fun hardDelete(id: String)
+
+    @Query("DELETE FROM cards WHERE conversationId = :conversationId")
+    suspend fun deleteByConversation(conversationId: String)
 }
 
 @Dao
@@ -312,6 +321,10 @@ interface CardLinkDao {
     /** 删除某卡相关的所有关系边（作为源或被引用目标） */
     @Query("DELETE FROM card_links WHERE fromCardId = :cardId OR toCardId = :cardId")
     suspend fun deleteForCard(cardId: String)
+
+    /** 删除某会话下所有卡片的关系边（清理孤儿引用） */
+    @Query("DELETE FROM card_links WHERE fromCardId IN (SELECT id FROM cards WHERE conversationId = :conversationId) OR toCardId IN (SELECT id FROM cards WHERE conversationId = :conversationId)")
+    suspend fun deleteByConversation(conversationId: String)
 }
 
 @Dao

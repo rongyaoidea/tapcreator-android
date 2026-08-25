@@ -34,13 +34,49 @@ class SettingsViewModel @Inject constructor(
     private val db: AppDatabase,
     private val channels: ChannelRepository,
     private val settings: SettingsStore,
+    private val mcpManager: com.tapcreator.app.backend.mcp.MCPManager,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
+
+    /** 已注册的 MCP 服务器列表 */
+    val mcpServers = mutableStateOf<List<com.tapcreator.app.backend.mcp.MCPServer>>(emptyList())
 
     init {
         viewModelScope.launch {
             agentMemoryEnabled = settings.agentMemoryEnabledValue()
             agentStyle = settings.agentStyleValue()
+            mcpManager.init()
+            mcpServers.value = mcpManager.listServers()
+        }
+    }
+
+    fun removeMcpServer(name: String) {
+        viewModelScope.launch {
+            mcpManager.removeServer(name)
+            mcpServers.value = mcpManager.listServers()
+        }
+    }
+
+    fun toggleMcpEnabled(name: String, enabled: Boolean) {
+        viewModelScope.launch {
+            mcpManager.setEnabled(name, enabled)
+            mcpServers.value = mcpManager.listServers()
+        }
+    }
+
+    fun installMcp(entry: com.tapcreator.app.backend.mcp.McpMarketEntry, onDone: () -> Unit) {
+        viewModelScope.launch {
+            val server = com.tapcreator.app.backend.mcp.MCPServer(
+                name = entry.name,
+                type = entry.type,
+                command = entry.command,
+                args = entry.args,
+                url = entry.url,
+                enabled = true,
+            )
+            mcpManager.addServer(server)
+            mcpServers.value = mcpManager.listServers()
+            onDone()
         }
     }
 
@@ -157,7 +193,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val (ok, msg) = channels.testConnection(channelId)
-                toast(if (ok) "✅ $msg" else "测试失败：$msg")
+                toast(if (ok) "$msg" else "测试失败：$msg")
                 feedback = msg
                 feedbackOk = ok
             } finally {
@@ -246,6 +282,13 @@ class SettingsViewModel @Inject constructor(
 
     fun toggleModelEnabled(info: ModelInfo) {
         viewModelScope.launch { channels.setModelEnabled(info.model.id, !info.model.enabled) }
+    }
+
+    fun changeModelKind(info: ModelInfo, kind: MediaKind) {
+        viewModelScope.launch {
+            channels.setModelKind(info.model.id, kind)
+            toast("已更新类型")
+        }
     }
 
     fun deleteModel(info: ModelInfo) {

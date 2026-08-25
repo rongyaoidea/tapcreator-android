@@ -37,9 +37,9 @@ private const val ROUTE_LIBRARY = "library"
 /** 底部导航的三个固定 tab（首页 / 素材库 / 设置） */
 private val TAB_ROUTES = setOf(ROUTE_HOME, ROUTE_LIBRARY, ROUTE_SETTINGS)
 private val TAB_ITEMS = listOf(
-    Triple(ROUTE_HOME, "首页", "🏠"),
-    Triple(ROUTE_LIBRARY, "素材库", "🗂"),
-    Triple(ROUTE_SETTINGS, "设置", "⚙️"),
+    Triple(ROUTE_HOME, "首页", "home"),
+    Triple(ROUTE_LIBRARY, "素材库", "library"),
+    Triple(ROUTE_SETTINGS, "设置", "settings"),
 )
 
 @Composable
@@ -137,11 +137,19 @@ private fun MainBottomBar(
         containerColor = MaterialTheme.colorScheme.surface,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
     ) {
-        TAB_ITEMS.forEach { (route, label, icon) ->
+        TAB_ITEMS.forEach { (route, label, iconType) ->
             NavigationBarItem(
                 selected = current == route,
                 onClick = { onSelect(route) },
-                icon = { Text(icon, style = MaterialTheme.typography.titleMedium) },
+                icon = {
+                    val tint = if (current == route) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    when (iconType) {
+                        "home" -> LineIconHome(tint = tint)
+                        "library" -> LineIconLibrary(tint = tint)
+                        "settings" -> LineIconSettings(tint = tint)
+                        else -> LineIconHome(tint = tint)
+                    }
+                },
                 label = { Text(label) },
                 colors = NavigationBarItemDefaults.colors(
                     indicatorColor = MaterialTheme.colorScheme.primaryContainer,

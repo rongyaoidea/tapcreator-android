@@ -96,7 +96,7 @@ class RunService @Inject constructor(
         val conv = com.tapcreator.app.data.db.ConversationEntity(
             id = UUID.randomUUID().toString(),
             userId = user.id,
-            title = title.ifBlank { "新会话 ${now % 10000}" },
+            title = title.ifBlank { "项目 ${now % 10000}" },
             surface = ConversationSurface.CHAT,
             createdAt = now,
             updatedAt = now,
@@ -177,7 +177,7 @@ class RunService @Inject constructor(
         db.agentRunDao().insert(run)
         // 仅当会话标题仍是默认占位名时才自动以提示词命名，避免每次生成都覆盖用户手动设置的会话名称
         val conv = db.conversationDao().byId(request.conversationId)
-        if (conv == null || conv.title.isBlank() || conv.title.startsWith("新会话")) {
+        if (conv == null || conv.title.isBlank() || conv.title.startsWith("项目")) {
             db.conversationDao().rename(request.conversationId, summarizeTitle(request.prompt), now)
         }
         return run
@@ -185,7 +185,7 @@ class RunService @Inject constructor(
 
     internal fun summarizeTitle(prompt: String): String {
         val clean = prompt.trim().take(18)
-        return if (clean.isBlank()) "新会话" else clean
+        return if (clean.isBlank()) "项目" else clean
     }
 
     /** 执行主流程：解析渠道与密钥 → 逐卡直连上游 → 落库 */
@@ -785,9 +785,10 @@ class RunService @Inject constructor(
     }
 
     /**
-     * 用默认文本模型优化用户的创作提示词：在【严格保留用户原意】的前提下做轻微润色。
-     * 优化后校验与原意重叠度，若模型改造过度则回退原文，不阻塞生成。
-     * 使用已配置的文本模型（无需额外 auth 验证，直接用 router 获取可用模型）。
+     * 用默认文本模型优化用户的创作提示词：结构化扩写模式。
+     * 市场主流做法（Midjourney/SD WebUI/ComfyUI）：保留用户原文作为核心主体，
+     * 在原文基础上补充质量修饰词、环境光影、风格细节，不替换不删改原文。
+     * 优化后校验原文关键内容是否完整保留，若脱离原意则回退原文。
      */
     suspend fun optimizePrompt(prompt: String): String {
         val modelEntity = router.models(MediaKind.TEXT).firstOrNull { it.enabled }
@@ -803,7 +804,20 @@ class RunService @Inject constructor(
                 listOf(
                     ChatMessage(
                         role = "system",
-                        content = "你是 AIGC 提示词的精调助手。下面的用户提示词将直接用于图片/视频生成，你的唯一任务是【保留用户原意，只做轻微润色】。\n硬性规则：\n1. 用户原文中的每一个主体、动作、场景、环境、风格、光影、色调等要素都必须完整保留，禁止删改、替换、扭曲原意；你写出的优化结果必须能让用户一眼认出这就是自己的话。\n2. 禁止凭空添加原文没有的关键元素：不得新增主体、不得改变人物/物体/场景，最多补充少量与原文同方向、不冲突的修饰词（如质感、细节程度）。\n3. 禁止改变画面的明暗、色彩与整体调性：不得引入与原文相反的描述（尤其禁止擅自加入“黑色/黑暗/阴郁”等暗色调），也不得删除或弱化原文明确指定的色调与风格。\n4. 只允许重排语序、补全残缺语法、把啰嗦口语整理通顺、把含混表述改得更具体明确。\n5. 若原文已经清晰可直接用于生成，或你无法在不动原意的前提下润色，请逐字原样输出原文。\n6. 只输出处理后的提示词本身，不要任何解释、编号、前后缀或多余文字。",
+                        
+                        content = """你是 AIGC 提示词扩写助手。用户会给一句创作诉求，你的任务是把它扩写为结构清晰、可直接用于图片/视频生成的提示词。
+
+扩写规则：
+1. 【必须完整保留】用户原文中的所有内容——主体、动作、场景、色调、风格等，原文每一个关键短语都必须逐字或近乎逐字出现在结果中。你只是在原文基础上补充，不是替换或改写。
+2. 【只补充不删改】你可以在用户原文后面补充：质量修饰词（如 high quality, detailed, professional）、环境细节（如 soft lighting, natural light）、风格标签（如 cinematic, photorealistic）、构图说明（如 close-up, wide angle）。
+3. 【禁止替换】不得把用户的主体替换为其他主体，不得改变用户指定的色调和氛围。如果用户说"白猫"你不能改成"黑猫"或"机器猫"。
+4. 【禁止加对立元素】不得添加与用户原文矛盾的内容（如用户要明亮你不得加 dark/gloomy）。
+5. 输出格式：用户原文 + 补充的修饰词，用逗号分隔，英文补充词为主（适配生图模型），中文原文保留。
+6. 只输出扩写后的提示词本身，不要任何解释、编号或多余文字。
+
+示例：
+用户：一只白猫坐在窗台上晒太阳
+输出：一只白猫坐在窗台上晒太阳, soft warm sunlight, cozy home interior, detailed fur, photorealistic, cinematic lighting, high quality, 8k""",
                     ),
                     ChatMessage(role = "user", content = prompt),
                 ),
@@ -811,8 +825,51 @@ class RunService @Inject constructor(
             )
         }.getOrNull() ?: return prompt.trim()
         val optimized = result.trim().trim('“', '”', '"', '。')
-        // 防胡思乱想兜底：只保留与原文重叠度足够高的优化结果（原文字符必须全部或近乎全部保留），
-        // 否则判定为模型脱离原意改写，直接回退用户原文。
+        // 防脱离原意兜底：只保留与原文重叠度足够高的优化结果
+        return if (optimized.isBlank() || !coversOriginal(optimized, prompt)) prompt.trim() else optimized
+    }
+
+    /**
+     * 用默认文本模型优化视频创作提示词：MadStory 电影级分镜扩写模式。
+     * 调研来源：AgentBrain 的 MadStory 分镜原则 + MiniMax/Hailuo/Kling 视频模型官方提示词指南。
+     * 视频提示词需要时序结构（按秒分段）、运镜描述、光影与声音，与图片提示词结构不同。
+     * 保留用户原文核心创意，按电影分镜结构扩写。
+     */
+    suspend fun optimizeVideoPrompt(prompt: String): String {
+        val modelEntity = router.models(MediaKind.TEXT).firstOrNull { it.enabled }
+            ?: router.defaultModel(MediaKind.TEXT)
+            ?: return prompt.trim()
+        val channelEntity = channels.byId(modelEntity.channelId) ?: return prompt.trim()
+        val channel = channels.toDomain(channelEntity)
+        val secrets = channels.secrets(channelEntity.id)
+        if (secrets.apiKey.isBlank()) return prompt.trim()
+        val result = runCatching {
+            gateway.agentChat(
+                channel, secrets, router.toDomain(modelEntity),
+                listOf(
+                    ChatMessage(
+                        role = "system",
+                        content = """你是视频提示词分镜扩写助手。用户会给一句创作诉求，你的任务是把它扩写为结构清晰、可直接用于视频生成的分镜提示词。
+
+分镜扩写规则：
+1. 【必须完整保留】用户原文中的所有内容——主体、动作、场景、色调、风格等，原文每一个关键短语都必须出现在结果中。
+2. 【分镜结构】按以下结构组织：核心创意 → 时间轴节奏（按秒分段，如 0-2s/2-5s/5-10s）→ 视觉构图（景别/机位）→ 动态运镜（推/拉/摇/移/跟，只选一种）→ 光影细节 → 声音与合成。
+3. 【禁止替换】不得把用户的主体替换为其他主体，不得改变用户指定的色调和氛围。
+4. 【禁止加对立元素】不得添加与用户原文矛盾的内容。
+5. 【避免】文本字幕、水印、变脸、过度抖动、物理穿帮。
+6. 输出格式：保留中文原文核心，分镜描述用中文+英文关键词混合，逗号分隔。
+7. 只输出扩写后的提示词本身，不要任何解释、编号或多余文字。
+
+示例：
+用户：一只白猫坐在窗台上晒太阳
+输出：一只白猫坐在窗台上晒太阳, 0-3s: 中近景固定机位, 猫眯眼享受阳光, warm sunlight through window, 3-6s: 缓慢推进, 阳光角度变化光影流动, 6-10s: 特写猫爪, soft focus background, natural lighting, ambient sound: purring cat, gentle breeze, cinematic, high quality, 1080p""",
+                    ),
+                    ChatMessage(role = "user", content = prompt),
+                ),
+                null,
+            )
+        }.getOrNull() ?: return prompt.trim()
+        val optimized = result.trim().trim('“', '”', '"', '。')
         return if (optimized.isBlank() || !coversOriginal(optimized, prompt)) prompt.trim() else optimized
     }
 

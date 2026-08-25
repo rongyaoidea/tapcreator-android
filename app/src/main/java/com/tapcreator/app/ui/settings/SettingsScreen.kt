@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
@@ -17,6 +18,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -30,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -65,49 +70,127 @@ fun SettingsScreen(
     // 进入设置页即自动发现：为已配置的空分辨率模型补全调研到的档位（幂等）
     LaunchedEffect(Unit) { vm.autoFillResolutions() }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 32.dp),
-    ) {
-        Row(
+    // 子页面状态：null=入口列表，"models"=模型配置，"agent"=Agent设置，"alpine"=Alpine Linux
+    var subPage by remember { mutableStateOf<String?>(null) }
+
+    if (subPage == null) {
+        // 入口列表
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 32.dp),
         ) {
-            Text("设置", style = MaterialTheme.typography.titleMedium)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("设置", style = MaterialTheme.typography.titleMedium)
+            }
+
+            AppearanceSection(vm)
+
+            vm.feedback?.let { fb ->
+                Text(
+                    text = fb,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (vm.feedbackOk) com.tapcreator.app.ui.theme.StatusOk else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
+                )
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
+
+            // 子页面入口
+            SettingsEntryRow(
+                icon = "[M]",
+                title = "模型配置",
+                subtitle = "渠道、API Key、模型目录与类型",
+            ) { subPage = "models" }
+            SettingsEntryRow(
+                icon = "[A]",
+                title = "Agent 设置",
+                subtitle = "风格偏好与记忆系统",
+            ) { subPage = "agent" }
+            SettingsEntryRow(
+                icon = "[L]",
+                title = "Alpine Linux",
+                subtitle = "沙箱环境与已安装依赖",
+            ) { subPage = "alpine" }
         }
-
-        AppearanceSection(vm)
-
-        vm.feedback?.let { fb ->
-            Text(
-                text = fb,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (vm.feedbackOk) com.tapcreator.app.ui.theme.StatusOk else MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-            )
+    } else {
+        // 子页面：带返回按钮
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.TextButton(onClick = { subPage = null }) {
+                    Text("返回", color = MaterialTheme.colorScheme.primary)
+                }
+                Text(
+                    text = when (subPage) {
+                        "models" -> "模型配置"
+                        "agent" -> "Agent 设置"
+                        "alpine" -> "Alpine Linux"
+                        else -> "设置"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = 32.dp),
+            ) {
+                when (subPage) {
+                    "models" -> {
+                        Text(
+                            text = "按媒体类型配置供应商：填 渠道 + API Key + 模型目录 后，模型才会出现在创作页可选、才能被 Agent 调用。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
+                        )
+                        KIND_ORDER.forEach { (kind, label) ->
+                            KindSection(kind, label, byKind[kind].orEmpty(), channelList, vm)
+                        }
+                    }
+                    "agent" -> AgentPrefsSection(vm)
+                    "alpine" -> AlpineSandboxSection(vm)
+                }
+            }
         }
-
-        Text(
-            text = "按媒体类型配置供应商：填 渠道 + API Key + 模型目录 后，模型才会出现在创作页可选、才能被 Agent 调用。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-        )
-
-        KIND_ORDER.forEach { (kind, label) ->
-            KindSection(kind, label, byKind[kind].orEmpty(), channelList, vm)
-        }
-
-        AgentPrefsSection(vm)
-
-        AlpineSandboxSection(vm)
-
-        SearchApiSection(vm)
     }
+}
+
+/** 设置入口行：emoji 图标 + 标题 + 副标题 + 点击进入子页面 */
+@Composable
+private fun SettingsEntryRow(
+    icon: String,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = Dimens.PagePadding, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(icon, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 }
 
 /** 外观设置区：深色模式开关（自原「我的」页面迁移而来） */
@@ -224,8 +307,7 @@ private fun SearchApiSection(vm: SettingsViewModel) {
 /** Agent 智能体偏好：记忆系统开关 + 个人风格偏好 */
 @Composable
 private fun AgentPrefsSection(vm: SettingsViewModel) {
-    var styleDraft by remember { mutableStateOf(vm.agentStyle) }
-    var saved by remember { mutableStateOf(false) }
+    val mcpServers by vm.mcpServers
 
     Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
         Text(
@@ -251,50 +333,141 @@ private fun AgentPrefsSection(vm: SettingsViewModel) {
             }
             Switch(checked = vm.agentMemoryEnabled, onCheckedChange = vm::toggleAgentMemory)
         }
-        // 个人风格偏好
+
+        // MCP 服务器列表
         Text(
-            text = "个人风格偏好",
+            text = "已安装配置的 MCP 服务器",
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier
                 .padding(horizontal = Dimens.PagePadding, vertical = 4.dp)
-                .padding(top = 8.dp),
+                .padding(top = 12.dp),
         )
-        OutlinedTextField(
-            value = styleDraft,
-            onValueChange = { styleDraft = it; saved = false },
-            label = { Text("用自然语言描述你偏好的创作风格…") },
-            placeholder = { Text("如：画面统一为暖色调胶片感，人物中近景，情绪克制，叙事留白多一些") },
-            minLines = 2,
-            maxLines = 4,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Dimens.PagePadding),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedButton(onClick = { vm.saveAgentStyle(styleDraft); saved = true }) {
-                Text("保存风格偏好")
-            }
-            if (saved) {
-                Text(
-                    text = "已保存",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = com.tapcreator.app.ui.theme.StatusOk,
-                )
+        if (mcpServers.isEmpty()) {
+            Text(
+                text = "暂未配置 MCP 服务器。MCP 服务器可扩展 Agent 的工具能力（如搜索、文件操作等）。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
+            )
+        } else {
+            mcpServers.forEach { server ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Dimens.PagePadding, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(server.name, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "类型：${server.type}  " +
+                                if (server.type == "stdio") "命令：${server.command}" else "URL：${server.url}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Switch(
+                        checked = server.enabled,
+                        onCheckedChange = { checked -> vm.toggleMcpEnabled(server.name, checked) },
+                    )
+                    TextButton(
+                        onClick = { vm.removeMcpServer(server.name) },
+                        modifier = Modifier.padding(start = 4.dp),
+                    ) {
+                        Text("删除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             }
         }
-        Text(
-            text = "该偏好会注入 Agent 的创作系统提示，影响其生成图片/视频的基调。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-        )
+
+        // MCP 市场入口
+        var showMarket by remember { mutableStateOf(false) }
+        OutlinedButton(
+            onClick = { showMarket = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Dimens.PagePadding, vertical = 8.dp),
+        ) { Text("从市场安装 MCP 工具") }
+
+        if (showMarket) {
+            McpMarketDialog(
+                installedNames = mcpServers.map { it.name }.toSet(),
+                onInstall = { entry ->
+                    vm.installMcp(entry) { }
+                },
+                onDismiss = { showMarket = false },
+            )
+        }
     }
+}
+
+/** MCP 市场搜索+安装弹窗 */
+@Composable
+private fun McpMarketDialog(
+    installedNames: Set<String>,
+    onInstall: (com.tapcreator.app.backend.mcp.McpMarketEntry) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val results = remember(query) { com.tapcreator.app.backend.mcp.McpMarket.search(query) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("MCP 工具市场") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("搜索 MCP 工具…") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(top = 8.dp),
+                ) {
+                    results.forEach { entry ->
+                        val installed = entry.name in installedNames
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(entry.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = entry.description,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = entry.category,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            TextButton(
+                                enabled = !installed,
+                                onClick = { onInstall(entry) },
+                            ) {
+                                Text(if (installed) "已安装" else "安装")
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
 }
 
 /** Agent 自进化学习区：低危技能自动生效，高危技能待人工审批；支持撤销与清空整个学习库 */
@@ -327,7 +500,7 @@ private fun KindSection(kind: MediaKind, label: String, models: List<ModelInfo>,
                 .fillMaxWidth()
                 .padding(horizontal = Dimens.PagePadding, vertical = 6.dp),
         ) {
-            Text("＋ 新增${label}供应商")
+            Text("新增${label}供应商")
         }
     }
 

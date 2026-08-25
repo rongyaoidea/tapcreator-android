@@ -73,6 +73,17 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    fun deleteAsset(asset: AssetEntity) {
+        viewModelScope.launch {
+            // 删除磁盘文件 + 数据库记录
+            runCatching {
+                asset.mediaPath?.let { java.io.File(it).takeIf { f -> f.exists() }?.delete() }
+                asset.previewPath?.let { java.io.File(it).takeIf { f -> f.exists() }?.delete() }
+            }
+            db.assetDao().deleteById(asset.id)
+        }
+    }
+
     /** 从系统文件选择器导入本地图片/视频到指定文件夹（null=未归档） */
     fun importUri(uri: Uri, folderId: String?) {
         val scheme = uri.scheme

@@ -169,8 +169,28 @@ class ChannelRepository @Inject constructor(
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
+        // 当 kind 未显式指定时，查询该渠道已有模型的 kind：若全部一致则用该 kind 作为默认值，
+        // 避免编辑渠道时新增的模型名被保底归为 TEXT（如文本模型名混入图像渠道时）。
+        val existingModels = if (kind == null) db.modelOptionDao().all().filter { it.channelId == channel.id } else emptyList()
+        val existingKinds = existingModels.map { it.kind }.distinct()
+        val effectiveKind = kind ?: if (existingKinds.size == 1) existingKinds.first() else null
         names.forEach { modelName ->
-            if (kind == null) {
+            if (effectiveKind != null) {
+                val existing = existingModels.firstOrNull { it.name == modelName }
+                if (existing != null) return@forEach
+                db.modelOptionDao().insert(
+                    ModelOptionEntity(
+                        id = UUID.randomUUID().toString(),
+                        name = modelName,
+                        kind = effectiveKind,
+                        channelId = channel.id,
+                        enabled = true,
+                        isDefault = false,
+                        capabilities = kindCaps(effectiveKind),
+                        resolutions = resolveResolutions(modelName),
+                    )
+                )
+            } else {
                 val (k, capabilities) = classifyModel(modelName)
                 val existing = db.modelOptionDao().all().firstOrNull {
                     it.channelId == channel.id && it.name == modelName
@@ -186,23 +206,6 @@ class ChannelRepository @Inject constructor(
                         isDefault = false,
                         capabilities = capabilities,
                         // 自动按模型名匹配已知分辨率；未命中留空，由用户在生成页手动填写
-                        resolutions = resolveResolutions(modelName),
-                    )
-                )
-            } else {
-                val existing = db.modelOptionDao().all().firstOrNull {
-                    it.channelId == channel.id && it.name == modelName
-                }
-                if (existing != null) return@forEach
-                db.modelOptionDao().insert(
-                    ModelOptionEntity(
-                        id = UUID.randomUUID().toString(),
-                        name = modelName,
-                        kind = kind,
-                        channelId = channel.id,
-                        enabled = true,
-                        isDefault = false,
-                        capabilities = kindCaps(kind),
                         resolutions = resolveResolutions(modelName),
                     )
                 )
@@ -269,8 +272,8 @@ class ChannelRepository @Inject constructor(
     /** 媒体类型对应的（参考/生成）能力标签 */
     internal fun kindCaps(kind: MediaKind): String = when (kind) {
         MediaKind.TEXT -> "text,reference"
-        MediaKind.IMAGE -> "image"
-        MediaKind.VIDEO -> "video"
+        MediaKind.IMAGE -> "image,reference"
+        MediaKind.VIDEO -> "video,reference,audio"
         MediaKind.AUDIO -> "audio"
         else -> "text"
     }
@@ -301,6 +304,8 @@ class ChannelRepository @Inject constructor(
         if (containsAny(n, "cogview", "glm-image", "glm-4v")) return "1024x1024,1440x720,720x1440,1536x1024,1024x1536,1280x1280"
         // 字节豆包 / 即梦 Seedream 4.0+：size 支持 1K/2K/4K 或具体像素，默认 2048x2048(1:1)，官方预设多比例
         if (containsAny(n, "seedream", "doubao", "jimeng", "即梦", "豆包", "born-in-speech")) return "1K,2K,4K,2048x2048,2560x1440,1440x2560,2304x1728,1728x2304"
+        // 商汤 SenseNova U1.5 Lite：支持 4K 真实视觉创作（U1 升级版），在 U1 的 2K 基准上加 4K 档位
+        if (containsAny(n, "u1.5", "u1-5", "u15", "sensenova-u1.5")) return "4K,2K,2048x2048,2496x1664,1664x2496,2368x1760,1760x2368,2272x1824,1824x2272,2752x1536,1536x2752,2752x1184,1184x2752,3840x2160,2160x3840,4096x4096"
         // 商汤 SenseNova U1 / U1 Fast：信息图专用，经 /v1/images/generations 调用，
         // 2K 基准输出，官方支持 11 种宽高比（比例从 9:21 到 21:9）。取自官方 MCP 仓库尺寸表 + 官方 PR。#115。
         if (containsAny(n, "sensenova", "sense-nova", "商汤", "u1-fast", "sensenova-u1")) return "2048x2048,2496x1664,1664x2496,2368x1760,1760x2368,2272x1824,1824x2272,2752x1536,1536x2752,2752x1184,1184x2752"
@@ -327,7 +332,7 @@ class ChannelRepository @Inject constructor(
             containsAny(n, "video", "veo", "sora", "kling", "hailuo", "runway", "pika", "text-to-video") ->
                 MediaKind.VIDEO to "video"
             containsAny(n, "image", "dall", "img", "sdxl", "flux", "stable", "midjourney", "cogview") ->
-                MediaKind.IMAGE to "image"
+                MediaKind.IMAGE to "image,reference"
             containsAny(n, "tts", "audio", "voice", "whisper", "sing") ->
                 MediaKind.AUDIO to "audio"
             containsAny(n, "gpt", "llm", "chat", "claude", "deepseek", "qwen", "glm", "moonshot", "kimi", "text") ->
@@ -354,6 +359,10 @@ class ChannelRepository @Inject constructor(
 
     suspend fun setModelEnabled(modelId: String, enabled: Boolean) {
         db.modelOptionDao().setEnabled(modelId, enabled)
+    }
+
+    suspend fun setModelKind(modelId: String, kind: MediaKind) {
+        db.modelOptionDao().setKind(modelId, kind.name)
     }
 
     suspend fun deleteModel(modelId: String) {

@@ -41,6 +41,8 @@ data class MCPServer(
     val url: String = "",
     /** 环境变量（可选的 Authorization 头等） */
     val env: Map<String, String> = emptyMap(),
+    /** 是否启用（禁用的服务器不参与 Agent 工具调用） */
+    val enabled: Boolean = true,
     /** 运行中的子进程（stdio 类型），不参与序列化 */
     var process: Process? = null,
 )
@@ -54,6 +56,7 @@ data class MCPServerConfig(
     val args: List<String> = emptyList(), // JSON 数组序列化，保留含逗号的参数
     val url: String = "",
     val env: String = "{}", // JSON 对象字符串
+    val enabled: Boolean = true,
 )
 
 /** 把 MCPServer 转为可序列化的配置快照 */
@@ -63,6 +66,7 @@ fun MCPServer.toConfig(): MCPServerConfig = MCPServerConfig(
     env = Json.encodeToString(
         MapSerializer(serializer<String>(), serializer<String>()), env
     ),
+    enabled = enabled,
 )
 
 /** 从配置快照恢复 MCPServer */
@@ -73,6 +77,7 @@ fun MCPServerConfig.toServer(): MCPServer = MCPServer(
     env = runCatching {
         Json.decodeFromString<Map<String, String>>(env)
     }.getOrDefault(emptyMap()),
+    enabled = enabled,
 )
 
 /**
@@ -139,6 +144,14 @@ class MCPManager @Inject constructor(
 
     /** 列出所有已注册的 MCP 服务器 */
     fun listServers(): List<MCPServer> = servers.values.toList()
+
+    /** 设置 MCP 服务器的启用/禁用状态（自动持久化） */
+    suspend fun setEnabled(name: String, enabled: Boolean) {
+        servers[name]?.let {
+            servers[name] = it.copy(enabled = enabled)
+            persist()
+        }
+    }
 
     /** 按名称查找服务器 */
     fun getServer(name: String): MCPServer? = servers[name]

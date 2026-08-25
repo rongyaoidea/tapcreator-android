@@ -7,11 +7,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
- * huashu-design 排印规范：
- *  - 中西文数字一律走 Sans，等宽数字用于数据(tabular-nums 语义)。
- *  - 标题走 Serif Display 制造字重/形式对比；正文用 Sans，基准 15-16sp。
+ * Anthropic 官网排版风格 + Claude 品牌字重对比。
+ *  - 标题走 Serif（衬线）制造品牌识别感；正文用 Sans，基准 15-16sp。
+ *  - 字重对比强烈：标题 Bold/SemiBold vs 正文 Normal。
  *  - 中文强调用字重(600)，不用 faux italic。
- *  - display 档才收字距，正文不加横排字距。
+ *  - 不用过紧字距，保持呼吸感。
  */
 private val bodySans = FontFamily.SansSerif
 private val displaySerif = FontFamily.Serif

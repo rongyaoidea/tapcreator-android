@@ -23,7 +23,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class ConversationListViewModel @Inject constructor(
-    db: AppDatabase,
+    private val db: AppDatabase,
     private val settings: SettingsStore,
     private val auth: AuthService,
     private val runs: RunService,
@@ -71,6 +71,23 @@ class ConversationListViewModel @Inject constructor(
             } finally {
                 isCreating.set(false)
             }
+        }
+    }
+
+    fun deleteConversation(id: String) {
+        viewModelScope.launch {
+            // 清理孤儿引用：先删关系边，再删卡片/消息/会话
+            db.cardLinkDao().deleteByConversation(id)
+            db.cardDao().deleteByConversation(id)
+            db.messageDao().deleteByConversation(id)
+            db.conversationDao().deleteById(id)
+        }
+    }
+
+    fun renameConversation(id: String, title: String) {
+        val clean = title.trim()
+        viewModelScope.launch {
+            db.conversationDao().rename(id, clean, System.currentTimeMillis())
         }
     }
 

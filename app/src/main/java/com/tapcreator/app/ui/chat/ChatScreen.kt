@@ -4,11 +4,18 @@ import android.widget.Toast
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -24,6 +31,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -36,7 +44,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -87,6 +100,8 @@ import com.tapcreator.app.data.db.CardEntity
 import com.tapcreator.app.data.db.MessageEntity
 import com.tapcreator.app.data.model.MediaKind
 import com.tapcreator.app.ui.theme.Dimens
+import com.tapcreator.app.ui.theme.CardButton
+import com.tapcreator.app.ui.theme.pressSpring
 import java.io.File
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
@@ -120,6 +135,8 @@ fun ChatScreen(
     var canvasFilter by rememberSaveable { mutableStateOf<MediaKind?>(null) }
     // 成品卡全屏预览：单击卡打开（图片放大/视频播放+下载），null=关闭
     var previewCard by remember { mutableStateOf<CardEntity?>(null) }
+    // 画布选取参考卡模式：点击「引用其他卡片」后关闭面板进入画布选卡，选中后回到面板
+    var canvasPickingRef by remember { mutableStateOf(false) }
 
     LaunchedEffect(messages.size, cards.size) {
         if (listState.layoutInfo.totalItemsCount > 0) {
@@ -149,22 +166,48 @@ fun ChatScreen(
                 CanvasWorkspace(
                     cards = cards,
                     links = cardLinks,
-                    selectedIds = viewModel.selectedCanvasIds,
+                    selectedIds = if (canvasPickingRef) viewModel.selectedReferenceCards.map { it.id }.toSet() else viewModel.selectedCanvasIds,
                     filterKind = canvasFilter,
                     onToggleNode = viewModel::toggleCanvasNode,
                     onClearSelection = viewModel::clearCanvasSelection,
                     onDoubleTapNode = { viewModel.selectCanvasNode(it) },
-                    onOpenDraft = { id, kind ->
+                    onOpenDraft = if (canvasPickingRef) ({ _, _ -> }) else ({ id, kind ->
                         viewModel.openDraftEditor(id, kind)
                         draftEditorOpen = true
+                    }),
+                    onOpenPreview = if (canvasPickingRef) {
+                        { card -> viewModel.toggleReference(card) }
+                    } else {
+                        { card -> previewCard = card }
                     },
-                    onOpenPreview = { card -> previewCard = card },
                     onCommitPositions = viewModel::commitNodePositions,
                     onToggleFilter = { canvasFilter = it },
                     onAutoLayout = viewModel::autoLayoutCanvas,
                     onDeleteSelected = viewModel::deleteSelectedNodes,
                     modifier = Modifier.fillMaxSize(),
                 )
+                if (canvasPickingRef) {
+                    // 画布选卡模式：顶部提示 + 底部确认按钮
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "点击卡片选取/取消参考（已选 ${viewModel.selectedReferenceCards.size} 张）",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.weight(1f),
+                            )
+                            CardButton("完成", onClick = { canvasPickingRef = false; draftEditorOpen = true })
+                        }
+                    }
+                }
                 if (cards.isEmpty()) {
                     Text(
                         text = "画布为空 —— 点下方「生图/生视频」新建卡片开始创作",
@@ -203,7 +246,7 @@ fun ChatScreen(
                             style = MaterialTheme.typography.labelSmall,
                             modifier = Modifier.padding(horizontal = 8.dp),
                         )
-                        TextButton(onClick = { viewModel.cancel() }) { Text("取消") }
+                        CardButton("取消", onClick = { viewModel.cancel() })
                     }
                 }
             }
@@ -220,8 +263,8 @@ fun ChatScreen(
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = viewModel::retry) { Text("重试") }
-                    TextButton(onClick = viewModel::clearError) { Text("忽略") }
+                    CardButton("重试", onClick = { viewModel.retry() })
+                    CardButton("忽略", onClick = { viewModel.clearError() })
                 }
             }
 
@@ -242,15 +285,9 @@ fun ChatScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                BottomActionButton(text = "🖼 生图", tint = MaterialTheme.colorScheme.primary) {
-                    viewModel.startDraft(MediaKind.IMAGE)
-                }
-                BottomActionButton(text = "🎬 生视频", tint = MaterialTheme.colorScheme.tertiary) {
-                    viewModel.startDraft(MediaKind.VIDEO)
-                }
-                BottomActionButton(text = "✦ Agent", tint = MaterialTheme.colorScheme.secondary) {
-                    agentOpen = true
-                }
+                BottomActionButton(text = "生图", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.Image, onClick = { viewModel.startDraft(MediaKind.IMAGE) })
+                BottomActionButton(text = "生视频", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.Movie, onClick = { viewModel.startDraft(MediaKind.VIDEO) })
+                BottomActionButton(text = "Agent", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.AutoAwesome, onClick = { agentOpen = true })
             }
             }
         }
@@ -269,29 +306,48 @@ fun ChatScreen(
     }
 
     // 空白卡片编辑浮层：点时间线上的空白卡片后弹出「输入 + 参数」，提交后生成
+    // 用独立 Dialog 框替代 ModalBottomSheet：避免面板从下滑出时跳动、按钮点击刷新跳动
     if (draftEditorOpen && viewModel.draftKind != null) {
-        ModalBottomSheet(onDismissRequest = {
-            // 关浮层=放弃这次创作，一并清掉草稿卡与 draftKind，避免残留导致下一次打开/输入异常
-            viewModel.clearDraft()
-            draftEditorOpen = false
-        }) {
-            Column(
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = {
+                // 关浮层=放弃这次创作，一并清掉草稿卡与 draftKind，避免残留导致下一次打开/输入异常
+                viewModel.clearDraft()
+                draftEditorOpen = false
+            },
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false, // 让输入法正确触发窗口调整
+            ),
+        ) {
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    // 内容超高时滚动查看：键盘弹出后可用高度变小，无滚动时输入框会被输入法遮住
-                    .verticalScroll(rememberScrollState())
-                    .imePadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(horizontal = 16.dp, vertical = 24.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                shadowElevation = 8.dp,
             ) {
-                Text(
-                    text = if (viewModel.draftKind == MediaKind.IMAGE) "🖼 生图" else "🎬 生视频",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-                CreationCard(viewModel, onSent = {
-                    // send() 已同步清空 draftKind 和 editingDraftId，无需再调 clearDraft
-                    draftEditorOpen = false
-                })
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .imePadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                ) {
+                    Text(
+                        text = if (viewModel.draftKind == MediaKind.IMAGE) "生图" else "生视频",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                    CreationCard(viewModel, onSent = {
+                        // send() 已同步清空 draftKind 和 editingDraftId，无需再调 clearDraft
+                        draftEditorOpen = false
+                    }, onPickFromCanvas = {
+                        draftEditorOpen = false
+                        canvasPickingRef = true
+                    })
+                }
             }
         }
     }
@@ -356,7 +412,9 @@ private fun ChatTopBar(
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextButton(onClick = onBack) { Text("←") }
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = MaterialTheme.colorScheme.primary)
+        }
         TextButton(
             onClick = onRename,
             modifier = Modifier.weight(1f),
@@ -366,6 +424,13 @@ private fun ChatTopBar(
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+            // 标题旁加可见的编辑铅笔图标，替代「点标题改名」的隐藏交互
+            Icon(
+                imageVector = Icons.Filled.Edit,
+                contentDescription = "重命名",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp).padding(start = 4.dp),
             )
         }
         TextButton(onClick = onOpenTasks) { Text("任务") }
@@ -436,7 +501,7 @@ private fun LinkSheet(vm: ChatViewModel, targetId: String, onDismiss: () -> Unit
             )
             // 本卡作为下游卡片的输入（我输出 → 其它卡引用）
             Text(
-                text = "输出参考（我→其他卡引用）",
+                text = "输出参考（我到其他卡引用）",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(bottom = 4.dp),
@@ -457,8 +522,18 @@ private fun LinkSheet(vm: ChatViewModel, targetId: String, onDismiss: () -> Unit
                             .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // 连接状态用色块显示
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(
+                                    if (connected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    androidx.compose.foundation.shape.CircleShape,
+                                ),
+                        )
                         Text(
-                            text = if (connected) "●" else "○",
+                            text = if (connected) "已连接" else "未连接",
                             color = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(end = 8.dp),
                         )
@@ -478,7 +553,7 @@ private fun LinkSheet(vm: ChatViewModel, targetId: String, onDismiss: () -> Unit
             HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
             // 其它卡片作为我的输入（其它卡 → 我引用）
             Text(
-                text = "输入参考（其他卡→我引用）",
+                text = "输入参考（其他卡到我引用）",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(bottom = 4.dp),
@@ -499,8 +574,18 @@ private fun LinkSheet(vm: ChatViewModel, targetId: String, onDismiss: () -> Unit
                             .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // 连接状态用色块显示
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(
+                                    if (connected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    androidx.compose.foundation.shape.CircleShape,
+                                ),
+                        )
                         Text(
-                            text = if (connected) "●" else "○",
+                            text = if (connected) "已连接" else "未连接",
                             color = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(end = 8.dp),
                         )
@@ -523,20 +608,39 @@ private fun LinkSheet(vm: ChatViewModel, targetId: String, onDismiss: () -> Unit
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun androidx.compose.foundation.layout.RowScope.BottomActionButton(text: String, tint: Color, onClick: () -> Unit) {
-    // 底部仅保留的「生图/生视频」入口：一次点击生成一张待创作卡片
+private fun androidx.compose.foundation.layout.RowScope.BottomActionButton(
+    text: String,
+    tint: Color,
+    onClick: () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
     Surface(
         modifier = Modifier
             .weight(1f)
             .clip(RoundedCornerShape(Dimens.RadiusCard))
-            .clickable(onClick = onClick),
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            )
+            .pressSpring(interactionSource),
         shape = RoundedCornerShape(Dimens.RadiusCard),
         color = tint,
     ) {
-        Box(
+        Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-            contentAlignment = Alignment.Center,
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(18.dp).padding(end = 4.dp),
+                )
+            }
             Text(
                 text = text,
                 style = MaterialTheme.typography.labelLarge,
@@ -692,7 +796,7 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
             vm.agentProgress?.let { (_done, _total) ->
-                TextButton(onClick = vm::cancelAgent) { Text("取消") }
+                CardButton("取消", onClick = { vm.cancelAgent() })
             }
         }
         // 对话流：占满主体（weight 1f），无高度上限——参考主流 Agent 应用，对话是页面主角
@@ -757,9 +861,7 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                 .padding(horizontal = 12.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = { showParams = !showParams }) {
-                Text(if (showParams) "收起参数 ▲" else "参数 ▼")
-            }
+            CardButton(if (showParams) "收起参数" else "参数", onClick = { showParams = !showParams })
             if (vm.selectedReferenceCards.isNotEmpty() || vm.selectedReferenceAssets.isNotEmpty()) {
                 Text(
                     text = "  参考 ${vm.selectedReferenceCards.size + vm.selectedReferenceAssets.size}",
@@ -769,9 +871,7 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
             }
             androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
             UploadButton(vm)
-            TextButton(onClick = { showAgentLibrary = !showAgentLibrary }) {
-                Text(if (showAgentLibrary) "收起库" else "素材库")
-            }
+            CardButton(if (showAgentLibrary) "收起库" else "素材库", onClick = { showAgentLibrary = !showAgentLibrary })
         }
         if (showParams) {
             Column(
@@ -858,21 +958,71 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                 enabled = !vm.agentBusy,
             )
             val context = LocalContext.current
-            IconButton(
-                onClick = {
-                    if (vm.agentInput.isBlank() || vm.agentBusy) {
-                        Toast.makeText(context, if (vm.agentBusy) "Agent 正在执行" else "请输入内容", Toast.LENGTH_SHORT).show()
-                    } else {
-                        vm.sendAgent()
-                    }
-                },
-                modifier = Modifier.padding(start = 8.dp).size(56.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Agent 执行",
-                    tint = MaterialTheme.colorScheme.primary,
+            var showStopConfirm by remember { mutableStateOf(false) }
+            if (vm.agentBusy) {
+                // 等待回复期间：显示停止按钮 + 橙色光流环绕动画
+                val infiniteTransition = rememberInfiniteTransition(label = "glow")
+                val glowAlpha by infiniteTransition.animateFloat(
+                    initialValue = 0.3f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(800, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "glowAlpha",
                 )
+                IconButton(
+                    onClick = { showStopConfirm = true },
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .size(56.dp)
+                        .then(
+                            Modifier.border(
+                                width = 2.dp,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = glowAlpha),
+                                shape = RoundedCornerShape(50),
+                            ),
+                        ),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Stop,
+                        contentDescription = "停止 Agent",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (showStopConfirm) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { showStopConfirm = false },
+                        title = { Text("停止 Agent") },
+                        text = { Text("确定停止当前 Agent 执行吗？已生成的产出会保留。") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                vm.cancelAgent()
+                                showStopConfirm = false
+                            }) { Text("停止", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showStopConfirm = false }) { Text("继续") }
+                        },
+                    )
+                }
+            } else {
+                IconButton(
+                    onClick = {
+                        if (vm.agentInput.isBlank()) {
+                            Toast.makeText(context, "请输入内容", Toast.LENGTH_SHORT).show()
+                        } else {
+                            vm.sendAgent()
+                        }
+                    },
+                    modifier = Modifier.padding(start = 8.dp).size(56.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Agent 执行",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
     }
@@ -880,7 +1030,7 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}) {
+private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanvas: () -> Unit = {}) {
     // 选类型后弹出的该类型创作卡片：文本/参考输入与参数选项在同一张卡片内
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
         Surface(
@@ -915,7 +1065,6 @@ private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}) {
         }
         val caps = buildList {
             if (vm.supportsReference) add("参考素材")
-            if (vm.supportsAudio) add("音频生成")
             if (isEmpty()) add("基础生成")
         }
         Text(
@@ -1016,27 +1165,12 @@ private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}) {
                     modifier = Modifier.weight(1f),
                 )
             }
-            // 能力标签驱动：仅当模型具备 audio 能力时展示音频开关
-            if (vm.supportsAudio) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "生成音频（音画同步）",
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Switch(checked = vm.audioEnabled, onCheckedChange = vm::toggleAudio)
-                }
-            }
+            // 音频默认随视频同步生成，不再提供单独开关
         }
         }
         }
         // 提示词/参考输入与提交（属于该类型卡片的一部分）
-        InputBar(vm, onSent)
+        InputBar(vm, onSent, onPickFromCanvas = onPickFromCanvas)
     }
 }
 
@@ -1065,12 +1199,11 @@ private fun SliderFake(vm: ChatViewModel, count: Boolean) {
 }
 
 @Composable
-private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}) {
+private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanvas: () -> Unit = {}) {
     val context = LocalContext.current
     val libraryAssets by vm.libraryAssets.collectAsState()
     val cards by vm.cards.collectAsState()
     var showLibrary by remember { mutableStateOf(false) }
-    var showCardRef by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1079,21 +1212,54 @@ private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}) {
     ) {
         Column(modifier = Modifier.weight(1f)) {
             if (vm.selectedReferenceCards.isNotEmpty()) {
-                Text(
-                    text = if (vm.supportsReference) {
-                        "已选 ${vm.selectedReferenceCards.size} 张参考卡片，将作为参考素材生效"
-                    } else {
-                        "已选 ${vm.selectedReferenceCards.size} 张参考卡片（当前模型不支持 reference，仅作文字提示）"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (vm.supportsReference) {
+                            "已选 ${vm.selectedReferenceCards.size} 张参考卡片"
+                        } else {
+                            "已选 ${vm.selectedReferenceCards.size} 张参考卡片（仅文字提示）"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    CardButton(
+                        text = "取消引用",
+                        onClick = { vm.clearAllReferences() },
+                        tint = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
             }
             if (vm.selectedReferenceAssets.isNotEmpty()) {
-                Text(
-                    text = "已选 ${vm.selectedReferenceAssets.size} 条素材库参考，将作为参考素材生效",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+                Column(modifier = Modifier.padding(bottom = 4.dp)) {
+                    Text(
+                        text = "已选 ${vm.selectedReferenceAssets.size} 条素材参考：",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    // 逐个显示文件名，确认上传成功
+                    vm.selectedReferenceAssets.forEach { asset ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(start = 8.dp, top = 2.dp),
+                        ) {
+                            Text(
+                                text = "· ${asset.title}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                onClick = { vm.toggleReferenceAsset(asset) },
+                                modifier = Modifier.size(24.dp).padding(0.dp),
+                                contentPadding = PaddingValues(0.dp),
+                            ) { Text("×", color = MaterialTheme.colorScheme.error) }
+                        }
+                    }
+                }
             }
             // 提示词优化开关：开启后提交前用默认文本模型润色提示词
             Row(
@@ -1124,17 +1290,10 @@ private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}) {
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 TextButton(
-                    onClick = { showCardRef = !showCardRef },
+                    onClick = { onPickFromCanvas() },
                     modifier = Modifier.padding(top = 2.dp),
                 ) {
-                    Text(if (showCardRef) "收起引用卡片" else "引用其他卡片")
-                }
-                if (showCardRef) {
-                    Text(
-                        text = "选择本会话已生成的图文卡作为参考输入",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text(if (vm.selectedReferenceCards.isNotEmpty()) "已选 ${vm.selectedReferenceCards.size} 张，点此在画布选取" else "引用其他卡片")
                 }
             }
             // 跨会话素材参考：从全局素材库选图/音频
@@ -1152,32 +1311,6 @@ private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}) {
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-            }
-            if (showCardRef) {
-                val target = vm.selectedKind
-                // 仅列出「能作为当前生成类型的参考」的已完成结果卡（排除空白草稿卡 runId='draft'）
-                val eligible = cards.filter { it.runId != "draft" }
-                    .filter { vm.canServeAsReference(it.kind, target) }
-                if (eligible.isEmpty()) {
-                    Text(
-                        text = "暂无可用卡片作为参考（需先生成图/视频卡，且其类型可作当前生成的输入）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                } else {
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(vertical = 4.dp),
-                    ) {
-                        items(eligible, key = { it.id }) { card ->
-                            CardRefChip(
-                                card = card,
-                                selected = vm.selectedReferenceCards.any { it.id == card.id },
-                            ) { vm.toggleReference(card) }
-                        }
-                    }
                 }
             }
             if (showLibrary) {
@@ -1262,6 +1395,7 @@ private fun AssetRefChip(asset: AssetEntity, selected: Boolean, onToggle: () -> 
 /** 上传附件：按当前生成类型过滤可上传的格式（图片卡只传图；视频卡可传图/音频/视频；音频卡只传音频） */
 @Composable
 private fun UploadButton(vm: ChatViewModel, kind: MediaKind = vm.selectedKind) {
+    val context = LocalContext.current
     val mimeTypes: Array<String>
     val label: String
     when (kind) {
@@ -1283,7 +1417,16 @@ private fun UploadButton(vm: ChatViewModel, kind: MediaKind = vm.selectedKind) {
         }
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.importLocalMedia(uri)
+        if (uri != null) {
+            // 持久化 URI 读权限，避免某些设备回调后 URI 失效
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            vm.importLocalMedia(uri)
+        }
     }
     TextButton(
         onClick = { picker.launch(mimeTypes) },
@@ -1403,9 +1546,7 @@ private fun MediaPreview(
                                         modifier = Modifier.padding(end = 8.dp),
                                     )
                                 }
-                                TextButton(onClick = { promptExpanded = !promptExpanded }) {
-                                    Text(if (promptExpanded) "收起" else "展开", color = MaterialTheme.colorScheme.tertiary)
-                                }
+                                CardButton(if (promptExpanded) "收起" else "展开", onClick = { promptExpanded = !promptExpanded }, tint = MaterialTheme.colorScheme.tertiaryContainer, contentColor = MaterialTheme.colorScheme.onTertiaryContainer)
                             }
                             // 收起时只显一行预览，展开显全文
                             Text(
