@@ -109,7 +109,7 @@ class MCPManagerTest {
             name = "test",
             type = "stdio",
             command = "node",
-            args = "app.js",
+            args = listOf("app.js"),
             url = "",
             env = """{"KEY1":"val1","KEY2":"val2"}""",
         )
@@ -124,7 +124,7 @@ class MCPManagerTest {
             name = "test",
             type = "stdio",
             command = "node",
-            args = "",
+            args = emptyList(),
             url = "",
             env = "invalid json",
         )
@@ -138,7 +138,7 @@ class MCPManagerTest {
             name = "test",
             type = "http",
             command = "",
-            args = "",
+            args = emptyList(),
             url = "https://api.example.com",
             env = "",
         )
