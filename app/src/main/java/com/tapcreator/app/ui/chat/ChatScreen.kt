@@ -560,8 +560,9 @@ private fun AgentStreamBubble(role: String, text: String) {
                 .combinedClickable(
                     onClick = {},
                     onLongClick = {
+                        val displayText = if (isAgent) formatActionText(text) else text
                         val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Agent 对话", text))
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Agent 对话", displayText))
                         android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
                     },
                 ),

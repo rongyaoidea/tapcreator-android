@@ -404,9 +404,9 @@ $styleBlock
 
     /**
      * 执行单个动作（原 run() 内 when(action.action) 块，抽出以规避 JVM 单方法 64KB 限制）。
-     * - CONTINUE：等同原 continue，跳过本轮后续（reflexion 等），进入下一轮。
+     * - CONTINUE：等同原 continue，跳过本轮后续，进入下一轮。
      * - BREAK：等同原 break，终止整轮循环。
-     * - PROCEED：动作正常走完，继续后续流程（reflexion 自检等）。
+     * - PROCEED：动作正常走完，继续后续流程。
      */
     private suspend fun executeAction(action: AgentAction, st: AgentLoopState, ctx: AgentLoopContext): ActionOutcome {
         when (action.action) {

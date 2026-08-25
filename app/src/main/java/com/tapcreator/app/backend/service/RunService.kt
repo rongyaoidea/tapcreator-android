@@ -773,7 +773,7 @@ class RunService @Inject constructor(
      * 图片/视频/音频生成的提示词。未配置文本模型/调用失败时返回原文，不阻塞生成。
      * 使用已配置的文本模型（无需额外 auth 验证，直接用 router 获取可用模型）。
      */
-    suspend fun optimizePrompt(token: String, prompt: String): String {
+    suspend fun optimizePrompt(prompt: String): String {
         val modelEntity = router.models(MediaKind.TEXT).firstOrNull { it.enabled }
             ?: router.defaultModel(MediaKind.TEXT)
             ?: return prompt.trim()

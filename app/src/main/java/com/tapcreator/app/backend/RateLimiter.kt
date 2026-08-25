@@ -42,48 +42,42 @@ class RateLimiter @Inject constructor() {
      * @return 等待的毫秒数（0 表示无需等待）
      */
     suspend fun acquire(): Long {
-        // 计算需要等待的时间（在锁内计算）
-        val waitMs = mutex.withLock {
-            val now = System.currentTimeMillis()
-            val windowStart = now - windowMs
+        var totalWait = 0L
+        while (true) {
+            // 计算需要等待的时间（在锁内计算）
+            val waitMs = mutex.withLock {
+                val now = System.currentTimeMillis()
+                val windowStart = now - windowMs
 
-            // 移除窗口外的时间戳
-            while (timestamps.isNotEmpty() && timestamps.first() < windowStart) {
-                timestamps.removeFirst()
+                // 移除窗口外的时间戳
+                while (timestamps.isNotEmpty() && timestamps.first() < windowStart) {
+                    timestamps.removeFirst()
+                }
+
+                // 无限流（maxRpm == Int.MAX_VALUE）直接放行
+                if (maxRpm == Int.MAX_VALUE) return@withLock 0L
+
+                // 窗口内还有配额
+                if (timestamps.size < maxRpm) {
+                    timestamps.addLast(now)
+                    return@withLock 0L
+                }
+
+                // 已达上限：计算需要等待多久（最早的请求过期时间 - 当前时间）
+                val oldest = timestamps.first()
+                oldest + windowMs - now + 1 // +1ms 确保过期
             }
 
-            // 无限流（maxRpm == Int.MAX_VALUE）直接放行
-            if (maxRpm == Int.MAX_VALUE) return@withLock 0L
+            // 无等待，直接返回
+            if (waitMs <= 0) return totalWait
 
-            // 窗口内还有配额
-            if (timestamps.size < maxRpm) {
-                timestamps.addLast(now)
-                return@withLock 0L
-            }
+            // 释放锁后等待，避免阻塞其他协程
+            delay(waitMs)
+            totalWait += waitMs
 
-            // 已达上限：计算需要等待多久（最早的请求过期时间 - 当前时间）
-            val oldest = timestamps.first()
-            oldest + windowMs - now + 1 // +1ms 确保过期
+            // 循环回到顶部重新获取锁，重新检查配额
+            // 防止多协程同时等待后都通过：只有真正拿到配额的才返回
         }
-
-        // 无等待或等待时间已过，直接返回
-        if (waitMs <= 0) return 0L
-
-        // 释放锁后等待，避免阻塞其他协程
-        delay(waitMs)
-
-        // 重新获取锁，记录本次请求时间戳
-        mutex.withLock {
-            val now = System.currentTimeMillis()
-            val newWindowStart = now - windowMs
-            // 移除已过期的请求
-            while (timestamps.isNotEmpty() && timestamps.first() < newWindowStart) {
-                timestamps.removeFirst()
-            }
-            timestamps.addLast(now)
-        }
-
-        return waitMs
     }
 
     /** 重置限制器（清空历史，用于测试/切换模型） */

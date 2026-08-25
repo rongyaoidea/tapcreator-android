@@ -687,7 +687,7 @@ class ChatViewModel @Inject constructor(
             // Agent 仍执行时不消费，避免把「进行中批次」当作已完成产出误判。
             // 提示词优化：开启时先用默认文本模型润色，失败则回退原文继续生成
             if (opt) {
-                runCatching { runService.optimizePrompt(t, prompt) }
+                runCatching { runService.optimizePrompt(prompt) }
                     .onSuccess { optPrompt ->
                         if (optPrompt.isNotBlank() && optPrompt != prompt) {
                             // 优化成功且内容变化：标记增强，落卡时写 promptEnhanced 供预览标识

@@ -51,7 +51,7 @@ data class MCPServerConfig(
     val name: String,
     val type: String,
     val command: String = "",
-    val args: String = "", // 逗号分隔
+    val args: List<String> = emptyList(), // JSON 数组序列化，保留含逗号的参数
     val url: String = "",
     val env: String = "{}", // JSON 对象字符串
 )
@@ -59,7 +59,7 @@ data class MCPServerConfig(
 /** 把 MCPServer 转为可序列化的配置快照 */
 fun MCPServer.toConfig(): MCPServerConfig = MCPServerConfig(
     name = name, type = type, command = command,
-    args = args.joinToString(","), url = url,
+    args = args, url = url,
     env = Json.encodeToString(
         MapSerializer(serializer<String>(), serializer<String>()), env
     ),
@@ -68,7 +68,7 @@ fun MCPServer.toConfig(): MCPServerConfig = MCPServerConfig(
 /** 从配置快照恢复 MCPServer */
 fun MCPServerConfig.toServer(): MCPServer = MCPServer(
     name = name, type = type, command = command,
-    args = if (args.isNotBlank()) args.split(",").map { it.trim() }.filter { it.isNotEmpty() } else emptyList(),
+    args = args,
     url = url,
     env = runCatching {
         Json.decodeFromString<Map<String, String>>(env)

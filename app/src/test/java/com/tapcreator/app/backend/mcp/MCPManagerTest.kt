@@ -33,7 +33,7 @@ class MCPManagerTest {
         assertEquals("test-server", config.name)
         assertEquals("stdio", config.type)
         assertEquals("/usr/bin/node", config.command)
-        assertEquals("server.js,--verbose", config.args)
+        assertEquals(listOf("server.js", "--verbose"), config.args)
         assertEquals("", config.url)
         assertTrue(config.env.contains("API_KEY"))
         assertTrue(config.env.contains("secret123"))
@@ -76,12 +76,12 @@ class MCPManagerTest {
     }
 
     @Test
-    fun `MCPServerConfig toServer parses args from comma-separated string`() {
+    fun `MCPServerConfig toServer preserves args list`() {
         val config = MCPServerConfig(
             name = "test",
             type = "stdio",
             command = "node",
-            args = "app.js,--port,3000",
+            args = listOf("app.js", "--port", "3000"),
             url = "",
             env = "{}",
         )
@@ -95,7 +95,7 @@ class MCPManagerTest {
             name = "test",
             type = "http",
             command = "",
-            args = "",
+            args = emptyList(),
             url = "https://api.example.com",
             env = "{}",
         )
@@ -152,7 +152,7 @@ class MCPManagerTest {
             name = "roundtrip",
             type = "stdio",
             command = "/bin/sh",
-            args = "script.sh,arg1",
+            args = listOf("script.sh", "arg1"),
             url = "",
             env = """{"PATH":"/usr/bin"}""",
         )
@@ -164,8 +164,8 @@ class MCPManagerTest {
     @Test
     fun `MCPServerConfig list serialization roundtrip`() {
         val configs = listOf(
-            MCPServerConfig("s1", "stdio", "node", "app.js", "", "{}"),
-            MCPServerConfig("s2", "http", "", "", "https://remote.example.com", """{"AUTH":"Bearer x"}"""),
+            MCPServerConfig("s1", "stdio", "node", listOf("app.js"), "", "{}"),
+            MCPServerConfig("s2", "http", "", emptyList(), "https://remote.example.com", """{"AUTH":"Bearer x"}"""),
         )
         val serializer = kotlinx.serialization.builtins.ListSerializer(MCPServerConfig.serializer())
         val jsonStr = json.encodeToString(serializer, configs)
