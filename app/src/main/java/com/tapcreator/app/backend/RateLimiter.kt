@@ -1,5 +1,6 @@
 package com.tapcreator.app.backend
 
+import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -15,7 +16,7 @@ import kotlinx.coroutines.sync.withLock
  * 等待时不持有锁，避免阻塞其他协程。
  */
 @Singleton
-class RateLimiter {
+class RateLimiter @Inject constructor() {
 
     /** 默认每分钟最大请求数（Agent 对文本模型的调用频率） */
     var maxRpm: Int = DEFAULT_RPM
