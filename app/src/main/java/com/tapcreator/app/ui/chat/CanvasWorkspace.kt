@@ -551,7 +551,7 @@ private fun CanvasNodeContent(
                     MediaKind.AUDIO -> "音频卡"
                     else -> "卡片"
                 } },
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurface,

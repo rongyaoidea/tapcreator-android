@@ -4,8 +4,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -13,6 +17,12 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -45,6 +55,8 @@ private val TAB_ITEMS = listOf(
 @Composable
 fun TapcreatorNav(startRoute: String) {
     val nav = rememberNavController()
+    // 素材库选取模式：ChatScreen 调 onPickFromLibrary 时打开全屏 Dialog
+    var libraryPickerOpen by androidx.compose.runtime.mutableStateOf(false)
     // 全屏主题底色：确保深色模式下每个页面（含未铺满背景/转场瞬间）都落在主题底色上
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -99,6 +111,7 @@ fun TapcreatorNav(startRoute: String) {
                     ChatScreen(
                         onBack = { nav.popBackStack() },
                         onOpenTasks = { nav.navigate("tasks/$it") },
+                        onPickFromLibrary = { libraryPickerOpen = true },
                     )
                 }
                 composable(
@@ -121,6 +134,42 @@ fun TapcreatorNav(startRoute: String) {
                     exitTransition = { fadeOut(tween(180)) },
                 ) {
                     LibraryScreen()
+                }
+            }
+        }
+
+        // 素材库选取模式：全屏 Dialog 显示 LibraryScreen + 顶部完成按钮
+        if (libraryPickerOpen) {
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { libraryPickerOpen = false },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(onClick = { libraryPickerOpen = false }) {
+                                Text("返回", color = MaterialTheme.colorScheme.primary)
+                            }
+                            Text(
+                                "选取素材",
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { libraryPickerOpen = false }) {
+                                Text("完成", color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        LibraryScreen()
+                    }
                 }
             }
         }

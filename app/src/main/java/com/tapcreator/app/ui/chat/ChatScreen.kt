@@ -114,6 +114,7 @@ fun ChatScreen(
     onBack: () -> Unit,
     viewModel: ChatViewModel = hiltViewModel(),
     onOpenTasks: (String) -> Unit = {},
+    onPickFromLibrary: () -> Unit = {},
 ) {
     val messages by viewModel.messages.collectAsState()
     val cards by viewModel.cards.collectAsState()
@@ -300,7 +301,7 @@ fun ChatScreen(
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                AgentSheet(viewModel, onDismiss = { agentOpen = false })
+                AgentSheet(viewModel, onDismiss = { agentOpen = false }, onPickFromLibrary = onPickFromLibrary)
             }
         }
     }
@@ -341,11 +342,13 @@ fun ChatScreen(
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
                     CreationCard(viewModel, onSent = {
-                        // send() 已同步清空 draftKind 和 editingDraftId，无需再调 clearDraft
                         draftEditorOpen = false
                     }, onPickFromCanvas = {
                         draftEditorOpen = false
                         canvasPickingRef = true
+                    }, onPickFromLibrary = {
+                        draftEditorOpen = false
+                        onPickFromLibrary()
                     })
                 }
             }
@@ -767,9 +770,7 @@ private fun formatActionText(raw: String): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
-    val libraryAssets by vm.libraryAssets.collectAsState()
-    var showAgentLibrary by remember { mutableStateOf(false) }
+private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit, onPickFromLibrary: () -> Unit = {}) {
     // 参数折叠：默认收起，聚焦对话；点「参数」展开模型/开关/参考
     var showParams by remember { mutableStateOf(false) }
     // Agent 执行对话的滚动状态：新输出到达时跟随到底部
@@ -871,7 +872,7 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
             }
             androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
             UploadButton(vm)
-            CardButton(if (showAgentLibrary) "收起库" else "素材库", onClick = { showAgentLibrary = !showAgentLibrary })
+            CardButton("素材库", onClick = onPickFromLibrary)
         }
         if (showParams) {
             Column(
@@ -914,29 +915,6 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                                 colors = FilterChipDefaults.filterChipColors(),
                             )
                         }
-                    }
-                }
-            }
-        }
-        if (showAgentLibrary) {
-            if (libraryAssets.isEmpty()) {
-                Text(
-                    text = "素材库为空，可点「上传附件」导入本地图片/视频",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            } else {
-                LazyRow(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(libraryAssets, key = { it.id }) { asset ->
-                        AssetRefChip(
-                            asset = asset,
-                            selected = asset.mediaPath != null &&
-                                vm.selectedReferenceAssets.any { it.mediaPath == asset.mediaPath },
-                        ) { vm.toggleReferenceAsset(asset) }
                     }
                 }
             }
@@ -1030,7 +1008,7 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanvas: () -> Unit = {}) {
+private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanvas: () -> Unit = {}, onPickFromLibrary: () -> Unit = {}) {
     // 选类型后弹出的该类型创作卡片：文本/参考输入与参数选项在同一张卡片内
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
         Surface(
@@ -1170,7 +1148,7 @@ private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromC
         }
         }
         // 提示词/参考输入与提交（属于该类型卡片的一部分）
-        InputBar(vm, onSent, onPickFromCanvas = onPickFromCanvas)
+        InputBar(vm, onSent, onPickFromCanvas = onPickFromCanvas, onPickFromLibrary = onPickFromLibrary)
     }
 }
 
@@ -1199,11 +1177,8 @@ private fun SliderFake(vm: ChatViewModel, count: Boolean) {
 }
 
 @Composable
-private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanvas: () -> Unit = {}) {
+private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanvas: () -> Unit = {}, onPickFromLibrary: () -> Unit = {}) {
     val context = LocalContext.current
-    val libraryAssets by vm.libraryAssets.collectAsState()
-    val cards by vm.cards.collectAsState()
-    var showLibrary by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1296,43 +1271,10 @@ private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanva
                     Text(if (vm.selectedReferenceCards.isNotEmpty()) "已选 ${vm.selectedReferenceCards.size} 张，点此在画布选取" else "引用其他卡片")
                 }
             }
-            // 跨会话素材参考：从全局素材库选图/音频
+            // 跨会话素材参考：跳转到素材库页面选取（不再内嵌列表）
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(
-                    onClick = { showLibrary = !showLibrary },
-                    modifier = Modifier.padding(top = 2.dp),
-                ) {
-                    Text(if (showLibrary) "收起素材库" else "从素材库引用")
-                }
+                CardButton("从素材库引用", onClick = onPickFromLibrary)
                 UploadButton(vm)
-                if (vm.supportsReference) {
-                    Text(
-                        text = "图/音频可跨会话复用",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            if (showLibrary) {
-                if (libraryAssets.isEmpty()) {
-                    Text(
-                        text = "素材库为空，先去会话里生成几张图或音频再回来选",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                } else {
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(vertical = 4.dp),
-                    ) {
-                        items(libraryAssets, key = { it.id }) { asset ->
-                            AssetRefChip(asset, selected = asset.mediaPath != null &&
-                                vm.selectedReferenceAssets.any { it.mediaPath == asset.mediaPath }
-                            ) { vm.toggleReferenceAsset(asset) }
-                        }
-                    }
-                }
             }
         }
         IconButton(
@@ -1396,26 +1338,9 @@ private fun AssetRefChip(asset: AssetEntity, selected: Boolean, onToggle: () -> 
 @Composable
 private fun UploadButton(vm: ChatViewModel, kind: MediaKind = vm.selectedKind) {
     val context = LocalContext.current
-    val mimeTypes: Array<String>
-    val label: String
-    when (kind) {
-        MediaKind.IMAGE -> {
-            mimeTypes = arrayOf("image/*")
-            label = "上传图片"
-        }
-        MediaKind.VIDEO -> {
-            mimeTypes = arrayOf("image/*", "audio/*", "video/*")
-            label = "上传图/音/视频"
-        }
-        MediaKind.AUDIO -> {
-            mimeTypes = arrayOf("audio/*")
-            label = "上传音频"
-        }
-        else -> {
-            mimeTypes = arrayOf("image/*", "audio/*", "video/*")
-            label = "上传附件"
-        }
-    }
+    // 统一允许上传图片/音频/视频，不按 kind 限制
+    val mimeTypes = arrayOf("image/*", "audio/*", "video/*")
+    val label = "上传附件"
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             // 持久化 URI 读权限，避免某些设备回调后 URI 失效

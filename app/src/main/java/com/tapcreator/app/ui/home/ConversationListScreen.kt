@@ -95,6 +95,19 @@ fun ConversationListScreen(
                     }
                 }
 
+                // 搜索框：项目多时快速定位
+                var searchQuery by remember { mutableStateOf("") }
+                androidx.compose.material3.OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("搜索项目…", style = MaterialTheme.typography.bodySmall) },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Dimens.PagePadding, vertical = 8.dp),
+                    shape = RoundedCornerShape(50),
+                )
+
                 HorizontalDivider(modifier = Modifier.padding(horizontal = Dimens.PagePadding), color = MaterialTheme.colorScheme.outlineVariant)
 
                 if (needsSetup) {
@@ -135,8 +148,11 @@ fun ConversationListScreen(
                         )
                     }
                 } else {
+                    // 搜索过滤
+                    val filtered = if (searchQuery.isBlank()) conversations
+                    else conversations.filter { it.title.contains(searchQuery, ignoreCase = true) }
                     // 分组：今天/昨天/本周/更早
-                    val groups = groupByRelativeTime(conversations)
+                    val groups = groupByRelativeTime(filtered)
                     LazyColumn(
                         contentPadding = PaddingValues(Dimens.PagePadding),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -240,7 +256,8 @@ private fun ConversationCard(
             .combinedClickable(onClick = onClick, onLongClick = { showMenu = true }),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
+        tonalElevation = 3.dp,
+        shadowElevation = 2.dp,
     ) {
         Column(
             modifier = Modifier
