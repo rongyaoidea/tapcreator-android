@@ -2,7 +2,7 @@ package com.tapcreator.app.ui.theme
 
 import androidx.compose.ui.unit.dp
 
-// 间距沿用 8dp 网格（参照 Airbnb DLS），克制堆叠。
+// 间距沿用 8dp 网格（参照 行业标杆 DLS），克制堆叠。
 object Dimens {
     val Xs = 8.dp
     val Sm = 12.dp

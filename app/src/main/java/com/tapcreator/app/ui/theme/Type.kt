@@ -7,7 +7,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
- * Anthropic 官网排版风格 + Claude 品牌字重对比。
+ * tapcreator 官网排版风格 + Brand 品牌字重对比。
  *  - 标题走 Serif（衬线）制造品牌识别感；正文用 Sans，基准 15-16sp。
  *  - 字重对比强烈：标题 Bold/SemiBold vs 正文 Normal。
  *  - 中文强调用字重(600)，不用 faux italic。

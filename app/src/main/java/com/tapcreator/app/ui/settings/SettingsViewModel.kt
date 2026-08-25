@@ -35,11 +35,18 @@ class SettingsViewModel @Inject constructor(
     private val channels: ChannelRepository,
     private val settings: SettingsStore,
     private val mcpManager: com.tapcreator.app.backend.mcp.MCPManager,
+    private val sandbox: com.tapcreator.app.backend.sandbox.PRootSandbox,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
     /** 已注册的 MCP 服务器列表 */
     val mcpServers = mutableStateOf<List<com.tapcreator.app.backend.mcp.MCPServer>>(emptyList())
+
+    /** 沙箱状态 */
+    var sandboxReady by mutableStateOf(false)
+        private set
+    var sandboxBusy by mutableStateOf(false)
+        private set
 
     init {
         viewModelScope.launch {
@@ -47,6 +54,42 @@ class SettingsViewModel @Inject constructor(
             agentStyle = settings.agentStyleValue()
             mcpManager.init()
             mcpServers.value = mcpManager.listServers()
+            sandboxReady = sandbox.isReady()
+        }
+    }
+
+    /** 手动初始化沙箱（解压+启动） */
+    fun initSandbox() {
+        if (sandboxBusy) return
+        sandboxBusy = true
+        viewModelScope.launch {
+            try {
+                sandbox.ensureReady()
+                sandboxReady = sandbox.isReady()
+                toast(if (sandboxReady) "沙箱已就绪" else "沙箱启动失败")
+            } catch (e: Exception) {
+                toast("沙箱启动失败：${e.message}")
+            } finally {
+                sandboxBusy = false
+            }
+        }
+    }
+
+    /** 重置沙箱（删除 rootfs + 重新解压启动） */
+    fun resetSandbox() {
+        if (sandboxBusy) return
+        sandboxBusy = true
+        viewModelScope.launch {
+            try {
+                sandbox.reset()
+                sandbox.ensureReady()
+                sandboxReady = sandbox.isReady()
+                toast(if (sandboxReady) "沙箱已重置并就绪" else "沙箱重置后启动失败")
+            } catch (e: Exception) {
+                toast("沙箱重置失败：${e.message}")
+            } finally {
+                sandboxBusy = false
+            }
         }
     }
 
@@ -64,14 +107,18 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun installMcp(entry: com.tapcreator.app.backend.mcp.McpMarketEntry, onDone: () -> Unit) {
+    fun installMcp(entry: com.tapcreator.app.backend.mcp.McpMarketEntry, apiKey: String = "", onDone: () -> Unit) {
         viewModelScope.launch {
+            val env = if (entry.requiresApiKey && apiKey.isNotBlank()) {
+                mapOf(entry.apiKeyEnvKey to apiKey)
+            } else emptyMap()
             val server = com.tapcreator.app.backend.mcp.MCPServer(
                 name = entry.name,
                 type = entry.type,
                 command = entry.command,
                 args = entry.args,
                 url = entry.url,
+                env = env,
                 enabled = true,
             )
             mcpManager.addServer(server)

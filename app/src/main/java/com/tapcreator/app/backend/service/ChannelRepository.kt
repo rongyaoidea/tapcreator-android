@@ -29,14 +29,14 @@ class ChannelRepository @Inject constructor(
     private val gateway: ProviderGateway,
 ) {
 
-    /** 种子化默认渠道：预置 OpenAI 兼容、MiniMax 官方 H3、秘塔 MiniMax H3 三个禁用占位渠道等待配置 */
+    /** 种子化默认渠道：预置 OpenAI 兼容、上游视频模型 官方 H3、秘塔 上游视频模型 H3 三个禁用占位渠道等待配置 */
     suspend fun seedDefaults() {
         // 仅首次启动种子化一次；若每次启动都跑，用户删除的固定 id 种子模型会因“存在性检查为空”再次被插入，
         // 表现为“删了又自己恢复”。用持久化标记保证只种一次。
         if (settings.seeded()) return
         seedChannel("ch-openai", "OpenAI 兼容", Protocol.OPENAI_COMPAT, "https://api.openai.com/v1")
-        seedChannel("ch-minimax", "MiniMax 官方 H3", Protocol.MINIMAX_H3, "https://api.minimaxi.com")
-        seedChannel("ch-metaso-minimax", "秘塔 MiniMax H3", Protocol.MINIMAX_H3, "https://metaso.cn/api/minimax")
+        seedChannel("ch-上游视频模型", "上游视频模型 官方 H3", Protocol.MINIMAX_H3, "https://api.上游视频模型i.com")
+        seedChannel("ch-metaso-上游视频模型", "秘塔 上游视频模型 H3", Protocol.MINIMAX_H3, "https://metaso.cn/api/上游视频模型")
         seedModels()
         settings.markSeeded()
     }
@@ -58,15 +58,15 @@ class ChannelRepository @Inject constructor(
 
     private suspend fun seedModels() {
         seedModel("m-gpt-4o-mini", "gpt-4o-mini", MediaKind.TEXT, "ch-openai", "text,reference", true)
-        seedModel("m-dall-e-3", "dall-e-3", MediaKind.IMAGE, "ch-openai", "image", true, "1024x1024,1792x1024,1024x1792")
+        seedModel("m-上游图模型-3", "上游图模型-3", MediaKind.IMAGE, "ch-openai", "image", true, "1024x1024,1792x1024,1024x1792")
         seedModel("m-veo-2", "veo-2", MediaKind.VIDEO, "ch-openai", "video", true, "720P,1080P")
         seedModel("m-tts-1", "tts-1", MediaKind.AUDIO, "ch-openai", "audio", true)
-        seedModel("m-minimax-h3", "MiniMax-H3", MediaKind.VIDEO, "ch-minimax", "video,reference,audio", false, "768P,2K")
-        seedModel("m-metaso-h3", "MiniMax-H3", MediaKind.VIDEO, "ch-metaso-minimax", "video,reference,audio", false, "768P,2K")
+        seedModel("m-上游视频模型-h3", "上游视频模型-H3", MediaKind.VIDEO, "ch-上游视频模型", "video,reference,audio", false, "768P,2K")
+        seedModel("m-metaso-h3", "上游视频模型-H3", MediaKind.VIDEO, "ch-metaso-上游视频模型", "video,reference,audio", false, "768P,2K")
         // 兜底：无论常数据残留，保证文本/图像/视频/音频四类里每类都至少有一个已启用模型，
         // 避免"只能看到视频模型、看不到文本/生图模型"。
         ensureKindHasDefault(MediaKind.TEXT, "gpt-4o-mini", "ch-openai", "text,reference")
-        ensureKindHasDefault(MediaKind.IMAGE, "dall-e-3", "ch-openai", "image")
+        ensureKindHasDefault(MediaKind.IMAGE, "上游图模型-3", "ch-openai", "image")
     }
 
     private suspend fun ensureKindHasDefault(kind: MediaKind, modelName: String, channelId: String, capabilities: String) {
@@ -218,7 +218,7 @@ class ChannelRepository @Inject constructor(
     /** 已修正的旧档位 → 当前正确档位。曾自动预填过的错误取值，只要仍存着就纠正，
      *  但绝不覆盖用户手动填写的其他值（手动值不会恰好等于这些长串）。 */
     private val staleResolutionFixes = mapOf(
-        // 商汤 U1 Fast 旧值（错误）：1024/1536/2560 等非官方档位
+        // 上游模型 U1 Fast 旧值（错误）：1024/1536/2560 等非官方档位
         "1024x1024,2048x2048,1536x1024,1024x1536,2560x1024,1024x2560" to
             "2048x2048,2496x1664,1664x2496,2368x1760,1760x2368,2272x1824,1824x2272,2752x1536,1536x2752,2752x1184,1184x2752",
         // wan2.6/wan2.5 旧预填值：修正为官方推荐预设
@@ -286,9 +286,9 @@ class ChannelRepository @Inject constructor(
         val n = modelName.lowercase()
         // —— 图片模型 ——
         // OpenAI 系
-        if (containsAny(n, "gpt-image", "gpt-image-1", "gpt-image-2")) return "1024x1024,1536x1024,1024x1536"
-        if (containsAny(n, "dall-e-2", "dall-e2", "dall-e 2")) return "1024x1024,512x512,256x256"
-        if (containsAny(n, "dall-e-3", "dall-e3", "dall-e 3")) return "1024x1024,1792x1024,1024x1792"
+        if (containsAny(n, "上游图模型", "上游图模型-1", "上游图模型-2")) return "1024x1024,1536x1024,1024x1536"
+        if (containsAny(n, "上游图模型-2", "上游图模型2", "上游图模型 2")) return "1024x1024,512x512,256x256"
+        if (containsAny(n, "上游图模型-3", "上游图模型3", "上游图模型 3")) return "1024x1024,1792x1024,1024x1792"
         // 阿里云通义万相 / 千问 Qwen-Image（多源核实：阿里云百炼「文本生成图像」官方文档 + QwenCloud API 参考 + DashScope SDK）
         // wan2.7-image-pro：官方支持 1K(1024x1024)/2K(2048x2048)/4K(4096x4096)，默认 2K，宽高比 1:8–8:1
         if (containsAny(n, "wan2.7", "wanx2.7")) return "1024x1024,2048x2048,4096x4096"
@@ -304,11 +304,11 @@ class ChannelRepository @Inject constructor(
         if (containsAny(n, "cogview", "glm-image", "glm-4v")) return "1024x1024,1440x720,720x1440,1536x1024,1024x1536,1280x1280"
         // 字节豆包 / 即梦 Seedream 4.0+：size 支持 1K/2K/4K 或具体像素，默认 2048x2048(1:1)，官方预设多比例
         if (containsAny(n, "seedream", "doubao", "jimeng", "即梦", "豆包", "born-in-speech")) return "1K,2K,4K,2048x2048,2560x1440,1440x2560,2304x1728,1728x2304"
-        // 商汤 SenseNova U1.5 Lite：支持 4K 真实视觉创作（U1 升级版），在 U1 的 2K 基准上加 4K 档位
-        if (containsAny(n, "u1.5", "u1-5", "u15", "sensenova-u1.5")) return "4K,2K,2048x2048,2496x1664,1664x2496,2368x1760,1760x2368,2272x1824,1824x2272,2752x1536,1536x2752,2752x1184,1184x2752,3840x2160,2160x3840,4096x4096"
-        // 商汤 SenseNova U1 / U1 Fast：信息图专用，经 /v1/images/generations 调用，
+        // 上游模型 上游模型 U1.5 Lite：支持 4K 真实视觉创作（U1 升级版），在 U1 的 2K 基准上加 4K 档位
+        if (containsAny(n, "u1.5", "u1-5", "u15", "上游模型-u1.5")) return "4K,2K,2048x2048,2496x1664,1664x2496,2368x1760,1760x2368,2272x1824,1824x2272,2752x1536,1536x2752,2752x1184,1184x2752,3840x2160,2160x3840,4096x4096"
+        // 上游模型 上游模型 U1 / U1 Fast：信息图专用，经 /v1/images/generations 调用，
         // 2K 基准输出，官方支持 11 种宽高比（比例从 9:21 到 21:9）。取自官方 MCP 仓库尺寸表 + 官方 PR。#115。
-        if (containsAny(n, "sensenova", "sense-nova", "商汤", "u1-fast", "sensenova-u1")) return "2048x2048,2496x1664,1664x2496,2368x1760,1760x2368,2272x1824,1824x2272,2752x1536,1536x2752,2752x1184,1184x2752"
+        if (containsAny(n, "上游模型", "sense-nova", "上游模型", "u1-fast", "上游模型-u1")) return "2048x2048,2496x1664,1664x2496,2368x1760,1760x2368,2272x1824,1824x2272,2752x1536,1536x2752,2752x1184,1184x2752"
         // Agnes（agnes-image / agnes-video，OpenAI 兼容网关）
         if (containsAny(n, "agnes-image", "agnes-image-2", "agnesvideo")) {
             return "1024x1024,1536x1024,1024x1536"
@@ -317,9 +317,9 @@ class ChannelRepository @Inject constructor(
         if (containsAny(n, "agnes")) return "1024x1024,1536x1024,1024x1536"
         // —— 视频模型 ——
         if (containsAny(n, "veo")) return "720P,1080P"
-        if (containsAny(n, "minimax", "hailuo", "海螺")) return "768P,2K"
+        if (containsAny(n, "上游视频模型", "上游视频模型", "海螺")) return "768P,2K"
         if (containsAny(n, "wan2.5-t2v", "wan2.2-t2v", "wan-t2v", "wan-i2v", "wan2.5-i2v")) return "720P,1080P"
-        if (containsAny(n, "kling", "可灵")) return "720P,2K"
+        if (containsAny(n, "上游视频模型", "可灵")) return "720P,2K"
         if (containsAny(n, "sora", "runway", "pika")) return "720P,1080P"
         // 其余未知 → 留空，手动输入
         return ""
@@ -329,13 +329,13 @@ class ChannelRepository @Inject constructor(
     internal fun classifyModel(modelName: String): Pair<MediaKind, String> {
         val n = modelName.lowercase()
         return when {
-            containsAny(n, "video", "veo", "sora", "kling", "hailuo", "runway", "pika", "text-to-video") ->
+            containsAny(n, "video", "veo", "sora", "上游视频模型", "上游视频模型", "runway", "pika", "text-to-video") ->
                 MediaKind.VIDEO to "video"
-            containsAny(n, "image", "dall", "img", "sdxl", "flux", "stable", "midjourney", "cogview") ->
+            containsAny(n, "image", "dall", "img", "上游图模型", "上游图模型", "stable", "行业工具", "cogview") ->
                 MediaKind.IMAGE to "image,reference"
             containsAny(n, "tts", "audio", "voice", "whisper", "sing") ->
                 MediaKind.AUDIO to "audio"
-            containsAny(n, "gpt", "llm", "chat", "claude", "deepseek", "qwen", "glm", "moonshot", "kimi", "text") ->
+            containsAny(n, "gpt", "llm", "chat", "chat-model", "deepseek", "qwen", "glm", "moonshot", "kimi", "text") ->
                 MediaKind.TEXT to "text,reference"
             // 保底归入文本（最新的语言模型能力区间）
             else -> MediaKind.TEXT to "text,reference"
@@ -397,7 +397,7 @@ class ChannelRepository @Inject constructor(
         if (secrets.apiKey.isBlank()) throw TapcreatorException("渠道 ${channel.name} 未配置 API Key", "CHANNEL_NO_KEY")
     }
 
-    /** 地址含 minimax 时自动识别为 MiniMax H3 协议（官方 api.minimaxi.com / api.minimax.io 与 metaso.cn/api/minimax 共用 schema） */
+    /** 地址含 上游视频模型 时自动识别为 上游视频模型 H3 协议（官方 api.上游视频模型i.com / api.上游视频模型.io 与 metaso.cn/api/上游视频模型 共用 schema） */
     internal fun detectProtocol(baseUrl: String, fallback: Protocol): Protocol =
-        if (fallback == Protocol.OPENAI_COMPAT && baseUrl.lowercase().contains("minimax")) Protocol.MINIMAX_H3 else fallback
+        if (fallback == Protocol.OPENAI_COMPAT && baseUrl.lowercase().contains("上游视频模型")) Protocol.MINIMAX_H3 else fallback
 }

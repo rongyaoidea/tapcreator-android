@@ -89,6 +89,27 @@ class PRootSandbox @Inject constructor(
         }
     }
 
+    /** 沙箱是否就绪（供 UI 查询状态） */
+    fun isReady(): Boolean = ready.get() && process?.isAlive == true
+
+    /**
+     * 重置沙箱：停止进程 + 删除 rootfs + 删除 PRoot 二进制 + 清除 sentinel。
+     * 下次 ensureReady 时会重新解压和启动。
+     */
+    suspend fun reset(): Unit = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            // 停止 PRoot 进程
+            process?.let { runCatching { it.destroy() } }
+            process = null
+            ready.set(false)
+            // 删除 rootfs（含 sentinel）
+            rootfsDir.deleteRecursively()
+            rootfsDir.mkdirs()
+            // 删除 PRoot 二进制（下次重新复制）
+            prootBinary.delete()
+        }
+    }
+
     /**
      * 手动解压 tar.gz 到 rootfsDir（纯 Java，不依赖第三方库）。
      * Tar 格式：512 字节 header + 文件数据（补齐到 512 对齐）+ 两个空 512 块结尾。

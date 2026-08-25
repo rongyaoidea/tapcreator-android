@@ -28,9 +28,9 @@ data class AgentStep(
     val seconds: Int? = null,
     /** 引用第 n 步（从 1 计）的产物卡 id，用于视频续写/音频音色/风格参考 */
     val reference: Int? = null,
-    /** MadStory 参数：运动强度（motion intensity scale，建议 0.5~1.5） */
+    /** 分镜优化 参数：运动强度（motion intensity scale，建议 0.5~1.5） */
     val motion: Float? = null,
-    /** MadStory 参数：CFG scale（相关性尺度，如 2.0） */
+    /** 分镜优化 参数：CFG scale（相关性尺度，如 2.0） */
     val cfgScale: Float? = null,
 ) {
     /** 该步骤对应的媒体类型 */

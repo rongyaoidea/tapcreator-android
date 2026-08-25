@@ -74,7 +74,7 @@ class ProviderGateway @Inject constructor(
     ): UpstreamResult = when (channel.protocol) {
             Protocol.OPENAI_COMPAT -> openAiCreate(channel, secrets, model, prefs)
             Protocol.MINIMAX_H3 ->
-                throw TapcreatorException("MiniMax H3 渠道专用于视频生成，请通过视频任务使用", "KIND_UNSUPPORTED")
+                throw TapcreatorException("上游视频模型 H3 渠道专用于视频生成，请通过视频任务使用", "KIND_UNSUPPORTED")
             Protocol.SEEDANCE, Protocol.STABLE_DIFFUSION, Protocol.GEMINI_VIDEO ->
                 throw TapcreatorException("协议 ${channel.protocol} 尚未接入", "PROTOCOL_UNSUPPORTED")
         }
@@ -90,13 +90,13 @@ class ProviderGateway @Inject constructor(
         openAiVideo(channel, secrets, model, prefs, continueFrame)
 
     /**
-     * MiniMax H3 视频生成（异步：create → 轮询 query → 返回 CDN URL）。
+     * 上游视频模型 H3 视频生成（异步：create → 轮询 query → 返回 CDN URL）。
      * 续写：把上一段产出的视频 CDN URL 作为 reference_video 传入，使画面与音频衔接；
      * reference_audio 可选（音色参考）。单段时长强制 [4,15]。
      * 身份参考：firstIdentityRefs 仅在首段传入——把角色/产品的多视角图/视频 base64 一起送，
      * 让首段即锁定人物/产品身份，后续段再随 reference_video 自然延续。
      */
-    suspend fun minimaxH3Video(
+    suspend fun 上游视频模型H3Video(
         channel: Channel,
         secrets: ChannelSecrets,
         model: ModelOption,
@@ -143,13 +143,13 @@ class ProviderGateway @Inject constructor(
             put("resolution", normalizeResolution(model, MediaKind.VIDEO, prefs.resolution, prefs.ratio, prefs.quality) ?: if (prefs.quality == "high") "2K" else "768P")
             put("duration", (prefs.seconds ?: 5).coerceIn(4, 15))
             put("ratio", h3Ratio(prefs.ratio))
-            // MadStory 参数透传（由 Agent 规划提供；上游若不识别会走统一错误处理）
+            // 分镜优化 参数透传（由 Agent 规划提供；上游若不识别会走统一错误处理）
             prefs.cfgScale?.let { put("cfg_scale", it) }
             prefs.motion?.let { put("motion", buildJsonObject { put("type", "up"); put("scale", it) }) }
         }
         val createResp = execute(channel, secrets, "/v2/video_generation", body)
         val taskId = createResp["task_id"]?.jsonPrimitive?.content
-            ?: throw TapcreatorException("MiniMax H3 未返回 task_id", "UPSTREAM_EMPTY")
+            ?: throw TapcreatorException("上游视频模型 H3 未返回 task_id", "UPSTREAM_EMPTY")
         val url = pollH3Result(channel, secrets, taskId)
         return UpstreamResult(kind = MediaKind.VIDEO, mediaUrl = url, mime = "video/mp4", upstreamId = taskId)
     }
@@ -163,20 +163,20 @@ class ProviderGateway @Inject constructor(
             // 协程（用户取消时被 cancel）在此及时中断
             currentCoroutineContext().ensureActive()
             val resp = executeGet(channel, secrets, "/v2/query/video_generation/$taskId")
-            val task = resp["task"]?.jsonObject ?: throw TapcreatorException("MiniMax H3 查询响应异常", "UPSTREAM_BAD_BODY")
+            val task = resp["task"]?.jsonObject ?: throw TapcreatorException("上游视频模型 H3 查询响应异常", "UPSTREAM_BAD_BODY")
             val status = task["status"]?.jsonPrimitive?.content
             when (status) {
                 "succeeded", "success" -> {
                     val url = task["content"]?.jsonObject?.get("url")?.jsonPrimitive?.content
                     if (!url.isNullOrBlank()) return url
-                    throw TapcreatorException("MiniMax H3 未返回视频地址", "UPSTREAM_EMPTY")
+                    throw TapcreatorException("上游视频模型 H3 未返回视频地址", "UPSTREAM_EMPTY")
                 }
                 "failed", "fail", "error" -> {
                     val reason = task["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
-                    throw TapcreatorException("MiniMax H3 生成失败${reason?.let { "：$it" } ?: ""}", "UPSTREAM")
+                    throw TapcreatorException("上游视频模型 H3 生成失败${reason?.let { "：$it" } ?: ""}", "UPSTREAM")
                 }
             }
-            if (System.currentTimeMillis() > deadline) throw TapcreatorException("MiniMax H3 生成超时", "UPSTREAM_TIMEOUT")
+            if (System.currentTimeMillis() > deadline) throw TapcreatorException("上游视频模型 H3 生成超时", "UPSTREAM_TIMEOUT")
             // delay 是协程可取消的挂起点，取消信号会在此立即触发
             delay(10_000L)
         }
@@ -685,7 +685,7 @@ class ProviderGateway @Inject constructor(
         throw TapcreatorException(upstreamUrlError(code, text), "UPSTREAM_HTTP")
     }
 
-    /** GET 查询（MiniMax H3 轮询任务状态） */
+    /** GET 查询（上游视频模型 H3 轮询任务状态） */
     private fun executeGet(channel: Channel, secrets: ChannelSecrets, endpoint: String): kotlinx.serialization.json.JsonObject {
         val base = normalizeBase(channel.baseUrl)
         val builder = Request.Builder().url(base + endpoint).get()

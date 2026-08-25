@@ -74,7 +74,7 @@ class AgentBrain @Inject constructor(
 
     private fun systemPrompt(cinematic: Boolean, style: String = ""): String {
         val styleBlock = if (cinematic) """
-        3. 视频/图片提示词优化（MadStory 电影级分镜）：描述"谁在动、怎么动、镜头怎么跟、第几秒发生什么、声音是什么"。按 核心创意→时间轴节奏(按秒分段)→视觉构图(景别/机位)→动态运镜(一种运镜)→光影细节→声音与合成 组织；避免文本字幕/水印/变脸/过度抖动/物理穿帮。
+        3. 视频/图片提示词优化（分镜优化 电影级分镜）：描述"谁在动、怎么动、镜头怎么跟、第几秒发生什么、声音是什么"。按 核心创意→时间轴节奏(按秒分段)→视觉构图(景别/机位)→动态运镜(一种运镜)→光影细节→声音与合成 组织；避免文本字幕/水印/变脸/过度抖动/物理穿帮。
         """.trimIndent() else ""
         val personalStyle = if (style.isNotBlank()) """
 【个人风格偏好】在所有创作中始终贯彻我的偏好：

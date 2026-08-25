@@ -316,7 +316,7 @@ class RunService @Inject constructor(
                     // 首段额外带用户选定的音色参考（音频）与角色/产品身份参考（多视角图+视频）
                     val audioRef = if (idx == 0) referenceAudio else null
                     val firstIdentity = if (idx == 0) identityRefs else null
-                    gateway.minimaxH3Video(channel, secrets, model, segPref, referenceVideoUrl, firstIdentity, audioRef)
+                    gateway.上游视频模型H3Video(channel, secrets, model, segPref, referenceVideoUrl, firstIdentity, audioRef)
                 } else {
                     gateway.createVideoSegment(channel, secrets, model, segPref, continueFrame)
                 }
@@ -786,7 +786,7 @@ class RunService @Inject constructor(
 
     /**
      * 用默认文本模型优化用户的创作提示词：结构化扩写模式。
-     * 市场主流做法（Midjourney/SD WebUI/ComfyUI）：保留用户原文作为核心主体，
+     * 市场主流做法（行业工具/行业工具/行业工具）：保留用户原文作为核心主体，
      * 在原文基础上补充质量修饰词、环境光影、风格细节，不替换不删改原文。
      * 优化后校验原文关键内容是否完整保留，若脱离原意则回退原文。
      */
@@ -830,8 +830,8 @@ class RunService @Inject constructor(
     }
 
     /**
-     * 用默认文本模型优化视频创作提示词：MadStory 电影级分镜扩写模式。
-     * 调研来源：AgentBrain 的 MadStory 分镜原则 + MiniMax/Hailuo/Kling 视频模型官方提示词指南。
+     * 用默认文本模型优化视频创作提示词：分镜优化 电影级分镜扩写模式。
+     * 调研来源：AgentBrain 的 分镜优化 分镜原则 + 上游视频模型/上游视频模型/上游视频模型 视频模型官方提示词指南。
      * 视频提示词需要时序结构（按秒分段）、运镜描述、光影与声音，与图片提示词结构不同。
      * 保留用户原文核心创意，按电影分镜结构扩写。
      */

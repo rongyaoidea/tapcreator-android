@@ -882,14 +882,14 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit, onPickFromLibra
                     .padding(horizontal = 12.dp, vertical = 4.dp)
                     .verticalScroll(rememberScrollState()),
             ) {
-                // MadStory 分镜优化开关
+                // 分镜优化 分镜优化开关
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
                     Switch(
                         checked = vm.cinematicEnabled,
                         onCheckedChange = { vm.setCinematic(it) },
                     )
                     Text(
-                        text = "镜头分镜优化（MadStory）",
+                        text = "镜头分镜优化（分镜优化）",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1053,14 +1053,14 @@ private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromC
         )
         // 画幅（横竖/方）：图像与视频通用
         if (vm.selectedKind == MediaKind.IMAGE || vm.selectedKind == MediaKind.VIDEO) {
-            Row(
+            FlowRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text("画幅", style = MaterialTheme.typography.labelSmall)
+                Text("画幅", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(end = 4.dp))
                 RATIOS.forEach { r ->
                     FilterChip(
                         selected = vm.ratio == r,

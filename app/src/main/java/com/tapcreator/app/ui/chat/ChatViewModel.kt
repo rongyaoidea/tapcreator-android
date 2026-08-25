@@ -362,7 +362,7 @@ class ChatViewModel @Inject constructor(
         super.onCleared()
     }
 
-    /** MadStory 镜头分镜提示词优化开关 */
+    /** 分镜优化 镜头分镜提示词优化开关 */
     var cinematicEnabled by mutableStateOf(true)
 
     /** 推理深度级别：默认 AUTO（自动，不发 reasoning_effort），可选 LOW/MEDIUM/HIGH */

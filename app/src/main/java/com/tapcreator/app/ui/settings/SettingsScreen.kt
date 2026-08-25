@@ -53,8 +53,8 @@ private val KIND_ORDER = listOf(
 )
 private val KIND_HINT = mapOf(
     MediaKind.TEXT to "如 gpt-4o、deepseek-chat、qwen2.5",
-    MediaKind.IMAGE to "如 dall-e-3、sd-xl、flux",
-    MediaKind.VIDEO to "如 veo-2、MiniMax-H3、sora",
+    MediaKind.IMAGE to "如 上游图模型-3、sd-xl、上游图模型",
+    MediaKind.VIDEO to "如 veo-2、上游视频模型-H3、sora",
     MediaKind.AUDIO to "如 tts-1、whisper",
 )
 
@@ -239,6 +239,7 @@ private fun AlpineSandboxSection(vm: SettingsViewModel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
         )
+        // 沙箱状态
         Row(
             modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -248,13 +249,40 @@ private fun AlpineSandboxSection(vm: SettingsViewModel) {
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
-                text = "已启用（App 启动时自动初始化）",
+                text = if (vm.sandboxReady) "已就绪" else "未启动",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
+                color = if (vm.sandboxReady) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
             )
         }
         Text(
             text = "内置命令：ffmpeg（视频拼接/转码）、curl（联网）、python3（脚本执行）、grep/jq（文本处理）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
+        )
+        // 手动操作按钮
+        Row(
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedButton(
+                enabled = !vm.sandboxBusy,
+                onClick = { vm.initSandbox() },
+            ) {
+                Text(if (vm.sandboxBusy) "处理中…" else "手动启动")
+            }
+            OutlinedButton(
+                enabled = !vm.sandboxBusy,
+                onClick = {
+                    // 确认重置
+                    vm.resetSandbox()
+                },
+            ) {
+                Text("重置沙箱", color = MaterialTheme.colorScheme.error)
+            }
+        }
+        Text(
+            text = "升级后沙箱无法启动时，点「重置沙箱」删除旧 rootfs 并重新解压启动。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
@@ -395,8 +423,8 @@ private fun AgentPrefsSection(vm: SettingsViewModel) {
         if (showMarket) {
             McpMarketDialog(
                 installedNames = mcpServers.map { it.name }.toSet(),
-                onInstall = { entry ->
-                    vm.installMcp(entry) { }
+                onInstall = { entry, apiKey ->
+                    vm.installMcp(entry, apiKey) { }
                 },
                 onDismiss = { showMarket = false },
             )
@@ -408,11 +436,15 @@ private fun AgentPrefsSection(vm: SettingsViewModel) {
 @Composable
 private fun McpMarketDialog(
     installedNames: Set<String>,
-    onInstall: (com.tapcreator.app.backend.mcp.McpMarketEntry) -> Unit,
+    onInstall: (com.tapcreator.app.backend.mcp.McpMarketEntry, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
     val results = remember(query) { com.tapcreator.app.backend.mcp.McpMarket.search(query) }
+    // 待安装条目：选中后如果需要 API Key 则先弹输入框
+    var pendingEntry by remember { mutableStateOf<com.tapcreator.app.backend.mcp.McpMarketEntry?>(null) }
+    var apiKeyInput by remember { mutableStateOf("") }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("MCP 工具市场") },
@@ -448,14 +480,21 @@ private fun McpMarketDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 Text(
-                                    text = entry.category,
+                                    text = if (entry.requiresApiKey) "${entry.category} · 需 API Key" else entry.category,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
+                                    color = if (entry.requiresApiKey) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                                 )
                             }
                             TextButton(
                                 enabled = !installed,
-                                onClick = { onInstall(entry) },
+                                onClick = {
+                                    if (entry.requiresApiKey) {
+                                        pendingEntry = entry
+                                        apiKeyInput = ""
+                                    } else {
+                                        onInstall(entry, "")
+                                    }
+                                },
                             ) {
                                 Text(if (installed) "已安装" else "安装")
                             }
@@ -468,6 +507,44 @@ private fun McpMarketDialog(
         confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
+
+    // API Key 输入弹窗
+    pendingEntry?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { pendingEntry = null },
+            title = { Text("配置 ${entry.name}") },
+            text = {
+                Column {
+                    Text(
+                        text = entry.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                    OutlinedTextField(
+                        value = apiKeyInput,
+                        onValueChange = { apiKeyInput = it },
+                        label = { Text(entry.apiKeyLabel) },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = apiKeyInput.isNotBlank(),
+                    onClick = {
+                        onInstall(entry, apiKeyInput)
+                        pendingEntry = null
+                    },
+                ) { Text("安装") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingEntry = null }) { Text("取消") }
+            },
+        )
+    }
 }
 
 /** Agent 自进化学习区：低危技能自动生效，高危技能待人工审批；支持撤销与清空整个学习库 */
