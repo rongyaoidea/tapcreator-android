@@ -619,27 +619,23 @@ class ProviderGateway @Inject constructor(
     }
 
     private fun openAiImage(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
-        // 参考图生图：按模型类型选路径 + 兜底。
-        // 多模态生成模型（SenseNova U1 / Seedream / 豆包 / 通义万相 / 可图等国产原生多模态）走 /chat/completions
-        // 多模态 messages（image_url + text）+ modalities:["image"]——这是它们真正识别参考图的方式，
-        // 用 /images/generations 的 image 参数会被忽略（参考图根本没提交，结果与参考无关）。
-        // 若多模态路径失败，兜底回退 /images/generations + image 参数；仍失败则明确报错，绝不静默丢参考。
-        if (isMultimodalGenModel(channel, model)) {
+        // 有参考图：优先多模态 chat 图生图（SenseNova U1 / Seedream / 通义万相 / 可图等国产原生多模态
+        // 模型真正识别参考图的方式，/images/generations 的 image 参数会被它们忽略）。
+        // 不依赖模型名识别——统一先试多模态，失败自动兜底 images/generations + image（纯 base64），
+        // 仍失败则明确报错，绝不静默丢参考。
+        if (prefs.referenceImages.isNotEmpty()) {
             return try {
                 openAiChatImageMultimodal(channel, secrets, model, prefs)
             } catch (e: TapcreatorException) {
-                if (prefs.referenceImages.isNotEmpty() && e.code != "IMAGE_REF_NOT_SUPPORTED") {
-                    android.util.Log.w("ProviderGateway", "多模态图生图失败(${e.message})，回退 /images/generations 兜底")
-                    try {
-                        return openAiImageGenerations(channel, secrets, model, prefs)
-                    } catch (e2: TapcreatorException) {
-                        throw TapcreatorException(
-                            "参考图生图失败：多模态路径 ${e.message}；images/generations 兜底 ${e2.message}",
-                            "IMAGE_GEN_FAILED"
-                        )
-                    }
+                android.util.Log.w("ProviderGateway", "多模态图生图失败(${e.message})，回退 /images/generations + image 兜底")
+                try {
+                    return openAiImageGenerations(channel, secrets, model, prefs)
+                } catch (e2: TapcreatorException) {
+                    throw TapcreatorException(
+                        "参考图生图失败：多模态路径 ${e.message}；images/generations 兜底 ${e2.message}",
+                        "IMAGE_GEN_FAILED"
+                    )
                 }
-                throw e
             }
         }
         return openAiImageGenerations(channel, secrets, model, prefs)
@@ -653,25 +649,27 @@ class ProviderGateway @Inject constructor(
             ?: prefs.resolution?.takeIf { it.contains('x') }
             ?: prefs.ratio?.let(::ratioToSize)
             ?: "1024x1024"
-        // 图生图参考：把用户勾选参考卡片/素材的首张图片随请求上送（data URI），
-        // 修复「参考其他卡片生成结果不像」——此前 IMAGE 生成路径完全没把参考图提交给模型
+        // 图生图参考：把用户勾选参考卡片/素材的首张图片随请求上送。
+        // 值用「纯 base64」而非 data URI：多数 OpenAI 兼容图生图实现（尤其国产聚合商）的 image 字段
+        // 文档写的是 base64 编码；data URI（data:image/...;base64,）会被部分服务忽略或拒收。
         val imageRef = prefs.referenceImages.firstOrNull()
-        android.util.Log.i("ProviderGateway", "openAiImage: 参考图 ${prefs.referenceImages.size} 张，imageRef=${imageRef?.take(48)}... 是否上送=${imageRef != null}")
+        val imageB64 = imageRef?.substringAfter(";base64,", "")?.takeIf { it.isNotEmpty() } ?: imageRef
+        android.util.Log.i("ProviderGateway", "openAiImageGenerations: 参考图 ${prefs.referenceImages.size} 张，imageB64=${imageB64?.take(48)}... 是否上送=${imageB64 != null}")
         fun body(withImage: Boolean) = buildJsonObject {
             put("model", model.name)
             put("prompt", refSnippet + prefs.prompt)
             put("n", 1)
             put("size", res)
             if (prefs.quality == "high") put("quality", "hd")
-            if (withImage && imageRef != null) put("image", imageRef)
+            if (withImage && imageB64 != null) put("image", imageB64)
         }
         val resp = try {
-            execute(channel, secrets, "/images/generations", body(withImage = imageRef != null))
+            execute(channel, secrets, "/images/generations", body(withImage = imageB64 != null))
         } catch (e: TapcreatorException) {
             // 上游不接受 image 参数（400/422 参数不支持）：不静默降级——
             // 否则用户「参考卡片/素材」的图被悄悄丢弃，结果与参考完全无关（用户已反馈）。
             // 明确报错让用户知道当前模型不支持图生图参考，可去参考或更换支持图生图的模型。
-            if (imageRef != null && e.code == "UPSTREAM_HTTP" && Regex("HTTP (400|422)").containsMatchIn(e.message.orEmpty())) {
+            if (imageB64 != null && e.code == "UPSTREAM_HTTP" && Regex("HTTP (400|422)").containsMatchIn(e.message.orEmpty())) {
                 android.util.Log.w("ProviderGateway", "openAiImage: 上游拒绝 image 参数(${e.message})，参考图未提交")
                 throw TapcreatorException(
                     "当前模型不支持图生图参考（上游拒绝 image 参数）。请去掉参考图，或更换支持图生图的模型",
@@ -691,18 +689,6 @@ class ProviderGateway @Inject constructor(
             b64 != null -> UpstreamResult(kind = MediaKind.IMAGE, mediaBytes = decodeB64(b64), mime = "image/*")
             else -> throw TapcreatorException("上游未返回可下载图片", "UPSTREAM_EMPTY")
         }
-    }
-
-    /** 是否「原生多模态」图生图模型（SenseNova U1 / Seedream / 豆包 / 通义万相 / 可图 / CogView 等国产）。
-     *  这类模型图生图须走 /chat/completions 多模态（image_url+text），/images/generations 的 image 参数会被忽略。 */
-    private fun isMultimodalGenModel(channel: Channel, model: ModelOption): Boolean {
-        val base = channel.baseUrl.lowercase()
-        val mn = model.name.lowercase()
-        return base.contains("sensenova") || base.contains("sensetime") ||
-            mn.contains("u1") || mn.contains("u1.5") || mn.contains("日日新") || mn.contains("sensenova") ||
-            mn.contains("seedream") || mn.contains("doubao") || mn.contains("豆包") ||
-            mn.contains("wanx") || mn.contains("万相") || mn.contains("tongyi") || mn.contains("通义") ||
-            mn.contains("kolors") || mn.contains("可图") || mn.contains("cogview") || mn.contains("智谱")
     }
 
     /**
