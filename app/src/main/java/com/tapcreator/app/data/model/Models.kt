@@ -17,7 +17,7 @@ enum class ConversationSurface { CHAT }
 /** 上游协议类型 */
 enum class Protocol {
     OPENAI_COMPAT,      // OpenAI 兼容（文本 + 图像生成本次先落地）
-    MINIMAX_H3,         // 上游视频模型 H3（官方 api.上游视频模型i.com 与 metaso.cn/api/上游视频模型 代理共用 schema）
+    MINIMAX_H3,         // MiniMax H3（官方 api.minimaxi.com 与 metaso.cn/api/MiniMax 代理共用 schema）
     SEEDANCE,           // 预留：图片/视频
     STABLE_DIFFUSION,   // 预留
     GEMINI_VIDEO,       // 预留

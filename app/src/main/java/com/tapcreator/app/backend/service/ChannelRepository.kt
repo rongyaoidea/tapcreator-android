@@ -29,14 +29,14 @@ class ChannelRepository @Inject constructor(
     private val gateway: ProviderGateway,
 ) {
 
-    /** 种子化默认渠道：预置 OpenAI 兼容、上游视频模型 官方 H3、秘塔 上游视频模型 H3 三个禁用占位渠道等待配置 */
+    /** 种子化默认渠道：预置 OpenAI 兼容、MiniMax 官方 H3、秘塔 MiniMax H3 三个禁用占位渠道等待配置 */
     suspend fun seedDefaults() {
         // 仅首次启动种子化一次；若每次启动都跑，用户删除的固定 id 种子模型会因“存在性检查为空”再次被插入，
         // 表现为“删了又自己恢复”。用持久化标记保证只种一次。
         if (settings.seeded()) return
         seedChannel("ch-openai", "OpenAI 兼容", Protocol.OPENAI_COMPAT, "https://api.openai.com/v1")
-        seedChannel("ch-上游视频模型", "上游视频模型 官方 H3", Protocol.MINIMAX_H3, "https://api.上游视频模型i.com")
-        seedChannel("ch-metaso-上游视频模型", "秘塔 上游视频模型 H3", Protocol.MINIMAX_H3, "https://metaso.cn/api/上游视频模型")
+        seedChannel("ch-minimax", "MiniMax 官方 H3", Protocol.MINIMAX_H3, "https://api.minimaxi.com")
+        seedChannel("ch-metaso-minimax", "秘塔 MiniMax H3", Protocol.MINIMAX_H3, "https://metaso.cn/api/MiniMax")
         seedModels()
         settings.markSeeded()
     }
@@ -61,8 +61,8 @@ class ChannelRepository @Inject constructor(
         seedModel("m-上游图模型-3", "上游图模型-3", MediaKind.IMAGE, "ch-openai", "image", true, "1024x1024,1792x1024,1024x1792")
         seedModel("m-veo-2", "veo-2", MediaKind.VIDEO, "ch-openai", "video", true, "720P,1080P")
         seedModel("m-tts-1", "tts-1", MediaKind.AUDIO, "ch-openai", "audio", true)
-        seedModel("m-上游视频模型-h3", "上游视频模型-H3", MediaKind.VIDEO, "ch-上游视频模型", "video,reference,audio", false, "768P,2K")
-        seedModel("m-metaso-h3", "上游视频模型-H3", MediaKind.VIDEO, "ch-metaso-上游视频模型", "video,reference,audio", false, "768P,2K")
+        seedModel("m-minimax-h3", "MiniMax-H3", MediaKind.VIDEO, "ch-minimax", "video,reference,audio", false, "768P,2K")
+        seedModel("m-metaso-h3", "MiniMax-H3", MediaKind.VIDEO, "ch-metaso-minimax", "video,reference,audio", false, "768P,2K")
         // 兜底：无论常数据残留，保证文本/图像/视频/音频四类里每类都至少有一个已启用模型，
         // 避免"只能看到视频模型、看不到文本/生图模型"。
         ensureKindHasDefault(MediaKind.TEXT, "gpt-4o-mini", "ch-openai", "text,reference")
@@ -317,9 +317,9 @@ class ChannelRepository @Inject constructor(
         if (containsAny(n, "agnes")) return "1024x1024,1536x1024,1024x1536"
         // —— 视频模型 ——
         if (containsAny(n, "veo")) return "720P,1080P"
-        if (containsAny(n, "上游视频模型", "上游视频模型", "海螺")) return "768P,2K"
+        if (containsAny(n, "minimax", "minimax", "hailuo")) return "768P,2K"
         if (containsAny(n, "wan2.5-t2v", "wan2.2-t2v", "wan-t2v", "wan-i2v", "wan2.5-i2v")) return "720P,1080P"
-        if (containsAny(n, "上游视频模型", "可灵")) return "720P,2K"
+        if (containsAny(n, "kling", "可灵")) return "720P,2K"
         if (containsAny(n, "sora", "runway", "pika")) return "720P,1080P"
         // 其余未知 → 留空，手动输入
         return ""
@@ -329,7 +329,7 @@ class ChannelRepository @Inject constructor(
     internal fun classifyModel(modelName: String): Pair<MediaKind, String> {
         val n = modelName.lowercase()
         return when {
-            containsAny(n, "video", "veo", "sora", "上游视频模型", "上游视频模型", "runway", "pika", "text-to-video") ->
+            containsAny(n, "video", "veo", "sora", "minimax", "minimax", "runway", "pika", "text-to-video") ->
                 MediaKind.VIDEO to "video"
             containsAny(n, "image", "dall", "img", "上游图模型", "上游图模型", "stable", "行业工具", "cogview") ->
                 MediaKind.IMAGE to "image,reference"
@@ -397,7 +397,7 @@ class ChannelRepository @Inject constructor(
         if (secrets.apiKey.isBlank()) throw TapcreatorException("渠道 ${channel.name} 未配置 API Key", "CHANNEL_NO_KEY")
     }
 
-    /** 地址含 上游视频模型 时自动识别为 上游视频模型 H3 协议（官方 api.上游视频模型i.com / api.上游视频模型.io 与 metaso.cn/api/上游视频模型 共用 schema） */
+    /** 地址含 MiniMax 时自动识别为 MiniMax H3 协议（官方 api.minimaxi.com / api.minimax.io 与 metaso.cn/api/MiniMax 共用 schema） */
     internal fun detectProtocol(baseUrl: String, fallback: Protocol): Protocol =
-        if (fallback == Protocol.OPENAI_COMPAT && baseUrl.lowercase().contains("上游视频模型")) Protocol.MINIMAX_H3 else fallback
+        if (fallback == Protocol.OPENAI_COMPAT && baseUrl.lowercase().contains("minimax")) Protocol.MINIMAX_H3 else fallback
 }

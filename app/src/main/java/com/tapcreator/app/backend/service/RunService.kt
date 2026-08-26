@@ -316,7 +316,7 @@ class RunService @Inject constructor(
                     // 首段额外带用户选定的音色参考（音频）与角色/产品身份参考（多视角图+视频）
                     val audioRef = if (idx == 0) referenceAudio else null
                     val firstIdentity = if (idx == 0) identityRefs else null
-                    gateway.上游视频模型H3Video(channel, secrets, model, segPref, referenceVideoUrl, firstIdentity, audioRef)
+                    gateway.minimaxH3Video(channel, secrets, model, segPref, referenceVideoUrl, firstIdentity, audioRef)
                 } else {
                     gateway.createVideoSegment(channel, secrets, model, segPref, continueFrame)
                 }
@@ -831,7 +831,7 @@ class RunService @Inject constructor(
 
     /**
      * 用默认文本模型优化视频创作提示词：分镜优化 电影级分镜扩写模式。
-     * 调研来源：AgentBrain 的 分镜优化 分镜原则 + 上游视频模型/上游视频模型/上游视频模型 视频模型官方提示词指南。
+     * 调研来源：AgentBrain 的 分镜优化 分镜原则 + MiniMax/Hailuo/Kling 视频模型官方提示词指南。
      * 视频提示词需要时序结构（按秒分段）、运镜描述、光影与声音，与图片提示词结构不同。
      * 保留用户原文核心创意，按电影分镜结构扩写。
      */

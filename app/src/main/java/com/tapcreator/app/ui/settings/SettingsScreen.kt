@@ -54,7 +54,7 @@ private val KIND_ORDER = listOf(
 private val KIND_HINT = mapOf(
     MediaKind.TEXT to "如 gpt-4o、deepseek-chat、qwen2.5",
     MediaKind.IMAGE to "如 上游图模型-3、sd-xl、上游图模型",
-    MediaKind.VIDEO to "如 veo-2、上游视频模型-H3、sora",
+    MediaKind.VIDEO to "如 veo-2、MiniMax-H3、sora",
     MediaKind.AUDIO to "如 tts-1、whisper",
 )
 
