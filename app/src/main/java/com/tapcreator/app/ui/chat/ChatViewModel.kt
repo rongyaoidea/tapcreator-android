@@ -258,7 +258,6 @@ class ChatViewModel @Inject constructor(
         val agentStream: List<AgentLine> = emptyList(),
         val modelId: String? = null,
         val agentModelId: String? = null,
-        val cinematic: Boolean = true,
         val promptOptimize: Boolean = false,
         val reasoning: ThinkingLevel = ThinkingLevel.AUTO,
     )
@@ -299,7 +298,6 @@ class ChatViewModel @Inject constructor(
         agentStream = agentStream.map { AgentLine(it.first, it.second) },
         modelId = selectedModelId,
         agentModelId = selectedAgentModelId,
-        cinematic = cinematicEnabled,
         promptOptimize = promptOptimize,
         reasoning = thinkingLevel,
     )
@@ -337,8 +335,6 @@ class ChatViewModel @Inject constructor(
         if (s.modelId != null && visibleModels.any { it.id == s.modelId }) selectedModelId = s.modelId
         // Agent 文本模型偏好
         if (s.agentModelId != null && agentTextModels.any { it.id == s.agentModelId }) selectedAgentModelId = s.agentModelId
-        // 镜头分镜优化开关
-        cinematicEnabled = s.cinematic
         // 创作提示词优化开关
         promptOptimize = s.promptOptimize
         // 推理深度级别
@@ -356,9 +352,6 @@ class ChatViewModel @Inject constructor(
         }
         super.onCleared()
     }
-
-    /** 分镜优化 镜头分镜提示词优化开关 */
-    var cinematicEnabled by mutableStateOf(true)
 
     /** 推理深度级别：默认 AUTO（自动，不发 reasoning_effort），可选 LOW/MEDIUM/HIGH */
     var thinkingLevel by mutableStateOf(ThinkingLevel.AUTO)
@@ -449,11 +442,7 @@ class ChatViewModel @Inject constructor(
         markStateChanged()
     }
 
-    fun setCinematic(enabled: Boolean) {
-        cinematicEnabled = enabled
-        markStateChanged()
-    }
-
+    // 分镜优化已内置到 Agent skill（仅视频生成任务自动应用），不再提供用户开关
     // 推理深度级别已移除——始终使用 AUTO
     // fun updateThinkingLevel(level: ThinkingLevel) { ... }
 
@@ -888,7 +877,7 @@ class ChatViewModel @Inject constructor(
                     modelId = selectedAgentModelId,
                     referenceCardIds = refCards,
                     referenceAssetPaths = refAssets,
-                    cinematic = cinematicEnabled,
+                    cinematic = true, // 分镜优化内置到 Agent skill，视频生成任务自动应用
                     memoryEnabled = memEnabled,
                     style = style,
                     thinkingLevel = thinkingLevel,

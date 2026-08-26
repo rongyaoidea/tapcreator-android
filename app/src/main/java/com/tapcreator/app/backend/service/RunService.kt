@@ -949,14 +949,26 @@ class RunService @Inject constructor(
         return if (optimized.isBlank() || !coversOriginal(optimized, prompt)) prompt.trim() else optimized
     }
 
-    /** 判断优化结果是否仍完整保留用户原意：原文中的每个连续词元都应能在结果中找到 */
+    /** 判断优化结果是否仍保留用户原意。
+     *  中英文统一容错：英文按词元、中文按相邻两字 bigram 匹配，重点容忍「中间插入英文/空格修饰」；
+     *  对语序重排仍较敏感（相邻 bigram 被拆散会掉命中）——这是有意为之：语序/内容大改即视为脱离原意回退原文。
+     *  只要优化结果保留 ≥60% 的原文关键词元即达标，避免把中英文优化结果误判为「脱离原意」回退原文。 */
     private fun coversOriginal(optimized: String, original: String): Boolean {
         if (original.isBlank()) return true
-        val tokens = original.split(Regex("[，。！？、；：\\s,.!?;:]+")).filter { it.length >= 2 }
-        if (tokens.isEmpty()) return true
-        val hit = tokens.count { t -> optimized.contains(t) }
-        // 至少保留 60% 的关键词元，且原文开头/结尾的关键长词元未丢失
-        return hit.toFloat() / tokens.size >= 0.6f
+        val normOpt = optimized.lowercase()
+        val normOrig = original.lowercase()
+        val grams = mutableListOf<String>()
+        // 英文/数字词元（长度>=2，忽略 a/of 等单字虚词）
+        Regex("[a-z0-9]{2,}").findAll(normOrig).forEach { grams += it.value }
+        // 中文连续串按相邻两字 bigram 拆（中间插入英文/空格修饰也不至于整体失配）
+        Regex("[\\u4e00-\\u9fff]+").findAll(normOrig).forEach { run ->
+            val s = run.value
+            if (s.length == 1) grams += s
+            else for (i in 0 until s.length - 1) grams += s.substring(i, i + 2)
+        }
+        if (grams.isEmpty()) return true
+        val hit = grams.count { g -> normOpt.contains(g) }
+        return hit.toFloat() / grams.size >= 0.6f
     }
 
     /**

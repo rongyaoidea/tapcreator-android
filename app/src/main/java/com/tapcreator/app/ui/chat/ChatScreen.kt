@@ -958,19 +958,7 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit, onPickFromLibra
                     .padding(horizontal = 12.dp, vertical = 4.dp)
                     .verticalScroll(rememberScrollState()),
             ) {
-                // 分镜优化 分镜优化开关
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
-                    Switch(
-                        checked = vm.cinematicEnabled,
-                        onCheckedChange = { vm.setCinematic(it) },
-                    )
-                    Text(
-                        text = "镜头分镜优化（分镜优化）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                // 推理开关已移除——始终使用 ThinkingLevel.AUTO，不发送 reasoning_effort
+                // 分镜优化已内置到 Agent skill：仅视频生成任务自动应用，无用户开关
                 // Agent 文本模型选择（规划大脑 & 对话模型）
                 if (vm.visibleAgentTextModels.isNotEmpty()) {
                     Text(

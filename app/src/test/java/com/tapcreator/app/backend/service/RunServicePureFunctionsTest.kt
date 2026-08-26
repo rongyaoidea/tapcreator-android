@@ -193,10 +193,18 @@ class RunServicePureFunctionsTest {
 
     private fun coversOriginal(optimized: String, original: String): Boolean {
         if (original.isBlank()) return true
-        val tokens = original.split(Regex("[，。！？、；：\\s,.!?;:]+")).filter { it.length >= 2 }
-        if (tokens.isEmpty()) return true
-        val hit = tokens.count { t -> optimized.contains(t) }
-        return hit.toFloat() / tokens.size >= 0.6f
+        val normOpt = optimized.lowercase()
+        val normOrig = original.lowercase()
+        val grams = mutableListOf<String>()
+        Regex("[a-z0-9]{2,}").findAll(normOrig).forEach { grams += it.value }
+        Regex("[\\u4e00-\\u9fff]+").findAll(normOrig).forEach { run ->
+            val s = run.value
+            if (s.length == 1) grams += s
+            else for (i in 0 until s.length - 1) grams += s.substring(i, i + 2)
+        }
+        if (grams.isEmpty()) return true
+        val hit = grams.count { g -> normOpt.contains(g) }
+        return hit.toFloat() / grams.size >= 0.6f
     }
 
     @Test
@@ -208,6 +216,24 @@ class RunServicePureFunctionsTest {
     fun `coversOriginal accepts light polish keeping key elements`() {
         // 优化结果保留原文所有关键词元（赛博狐狸/霓虹灯/黑夜）→ 通过
         assertTrue(coversOriginal("赛博狐狸在霓虹灯下的黑夜中奔跑", "赛博狐狸，霓虹灯，黑夜"))
+    }
+
+    @Test
+    fun `coversOriginal accepts english original preserved`() {
+        // 英文原文完整保留 + 追加修饰词 → 通过
+        assertTrue(coversOriginal("a white cat sitting on the windowsill, warm sunlight", "a white cat sitting on the windowsill"))
+    }
+
+    @Test
+    fun `coversOriginal tolerates english synonym for one word`() {
+        // 英文单个同义词替换（cat→feline）不判定脱离原意 → 通过
+        assertTrue(coversOriginal("a white feline sitting on the windowsill, cinematic", "a white cat sitting on the windowsill"))
+    }
+
+    @Test
+    fun `coversOriginal accepts chinese with inserted english modifiers`() {
+        // 中文原文中插入英文修饰词/空格，bigram 仍多数命中 → 通过
+        assertTrue(coversOriginal("一只白猫坐在窗台上晒太阳, soft warm sunlight, high quality", "一只白猫坐在窗台上晒太阳"))
     }
 
     @Test

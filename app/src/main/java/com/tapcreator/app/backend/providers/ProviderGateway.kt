@@ -621,17 +621,32 @@ class ProviderGateway @Inject constructor(
     private fun openAiImage(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val refSnippet = prefs.referenceTexts.joinToString("\n", prefix = "参考素材：", postfix = "\n\n")
         // 每次只请求一张：数量(count)由 TaskExecutor 在设备内循环调用保证，便于逐卡落库与进度汇报
-        val body = buildJsonObject {
+        val res = normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
+            ?: prefs.resolution?.takeIf { it.contains('x') }
+            ?: prefs.ratio?.let(::ratioToSize)
+            ?: "1024x1024"
+        // 图生图参考：把用户勾选参考卡片/素材的首张图片随请求上送（data URI），
+        // 修复「参考其他卡片生成结果不像」——此前 IMAGE 生成路径完全没把参考图提交给模型
+        val imageRef = prefs.referenceImages.firstOrNull()
+        fun body(withImage: Boolean) = buildJsonObject {
             put("model", model.name)
             put("prompt", refSnippet + prefs.prompt)
             put("n", 1)
-            put("size", normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
-                ?: prefs.resolution?.takeIf { it.contains('x') }
-                ?: prefs.ratio?.let(::ratioToSize)
-                ?: "1024x1024")
+            put("size", res)
             if (prefs.quality == "high") put("quality", "hd")
+            if (withImage && imageRef != null) put("image", imageRef)
         }
-        val resp = execute(channel, secrets, "/images/generations", body)
+        val resp = try {
+            execute(channel, secrets, "/images/generations", body(withImage = imageRef != null))
+        } catch (e: TapcreatorException) {
+            // 上游不接受 image 参数（400/422 参数不支持）：去掉参考图降级为纯文生图，避免整体失败；
+            // 其余 4xx（429 限流/401 鉴权/413 体过大等）透传，不误吞真实错误
+            if (imageRef != null && e.code == "UPSTREAM_HTTP" && Regex("HTTP (400|422)").containsMatchIn(e.message.orEmpty())) {
+                execute(channel, secrets, "/images/generations", body(withImage = false))
+            } else {
+                throw e
+            }
+        }
         val data = resp.jsonObject["data"]?.jsonArray ?: throw TapcreatorException("上游未返回图片", "UPSTREAM_EMPTY")
         val first = data.firstOrNull()?.jsonObject ?: throw TapcreatorException("上游未返回图片", "UPSTREAM_EMPTY")
         val url = first["url"]?.jsonPrimitive?.content
