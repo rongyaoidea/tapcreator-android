@@ -34,6 +34,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -619,38 +620,31 @@ class ProviderGateway @Inject constructor(
     }
 
     private fun openAiImage(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
-        // 商汤官方平台（token.sensenova.cn / api.sensenova.cn）图生图必须走 /v1/images/edits，
-        // image=纯 base64（官方文档：model=sensenova-u1.5-lite）。/images/generations 与 chat 多模态
-        // 都不会识别参考图 → 参考图被忽略、结果与参考无关。
-        if (prefs.referenceImages.isNotEmpty() && isSensenova(channel, model)) {
+        val hasRef = prefs.referenceImages.isNotEmpty()
+        if (hasRef) {
+            // 图生图统一优先 /v1/images/edits（OpenAI 规范）：兼容服务只需换 base_url 即可迁移。
+            // SenseNova 官方用 JSON（image=纯 base64），其余 OpenAI 兼容用 multipart form-data。
+            // 失败 → 兜底多模态 chat → 兜底 /images/generations；仍失败明确报错，绝不静默丢参考。
             return try {
-                openAiImageEditsSensenova(channel, secrets, model, prefs)
+                if (isSensenova(channel, model)) {
+                    openAiImageEditsSensenova(channel, secrets, model, prefs)
+                } else {
+                    openAiImageEditsMultipart(channel, secrets, model, prefs)
+                }
             } catch (e: TapcreatorException) {
-                android.util.Log.w("ProviderGateway", "SenseNova /images/edits 失败(${e.message})，兜底多模态 chat")
+                android.util.Log.w("ProviderGateway", "/images/edits 图生图失败(${e.message})，兜底多模态 chat")
                 try {
                     return openAiChatImageMultimodal(channel, secrets, model, prefs)
                 } catch (e2: TapcreatorException) {
-                    throw TapcreatorException(
-                        "参考图生图失败：/images/edits ${e.message}；多模态 chat 兜底 ${e2.message}",
-                        "IMAGE_GEN_FAILED"
-                    )
-                }
-            }
-        }
-        // 有参考图：优先多模态 chat 图生图（其它原生多模态模型），失败自动兜底 images/generations + image。
-        // 不依赖模型名识别——统一先试多模态，仍失败则明确报错，绝不静默丢参考。
-        if (prefs.referenceImages.isNotEmpty()) {
-            return try {
-                openAiChatImageMultimodal(channel, secrets, model, prefs)
-            } catch (e: TapcreatorException) {
-                android.util.Log.w("ProviderGateway", "多模态图生图失败(${e.message})，回退 /images/generations + image 兜底")
-                try {
-                    return openAiImageGenerations(channel, secrets, model, prefs)
-                } catch (e2: TapcreatorException) {
-                    throw TapcreatorException(
-                        "参考图生图失败：多模态路径 ${e.message}；images/generations 兜底 ${e2.message}",
-                        "IMAGE_GEN_FAILED"
-                    )
+                    android.util.Log.w("ProviderGateway", "多模态 chat 图生图失败(${e2.message})，兜底 /images/generations")
+                    try {
+                        return openAiImageGenerations(channel, secrets, model, prefs)
+                    } catch (e3: TapcreatorException) {
+                        throw TapcreatorException(
+                            "参考图生图失败：/images/edits ${e.message}；多模态 ${e2.message}；images/generations ${e3.message}",
+                            "IMAGE_GEN_FAILED"
+                        )
+                    }
                 }
             }
         }
@@ -720,6 +714,44 @@ class ProviderGateway @Inject constructor(
             return "${align32(w).coerceAtLeast(32)}x${align32(h).coerceAtLeast(32)}"
         }
         return "2048x2048"
+    }
+
+    /**
+     * OpenAI 规范 multipart /images/edits 图生图（多数聚合平台/自部署：APIYI、Gitee AI、stable-diffusion.cpp 等）。
+     * multipart form-data：model/prompt/n/size + image 文件。解析 data[0].b64_json 或 url。
+     */
+    private fun openAiImageEditsMultipart(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+        val dataUri = prefs.referenceImages.firstOrNull()
+            ?: throw TapcreatorException("图生图缺少参考图", "REF_IMAGE_EMPTY")
+        val b64 = dataUri.substringAfter(";base64,", dataUri)
+        val bytes = try {
+            decodeB64(b64)
+        } catch (e: Exception) {
+            throw TapcreatorException("参考图 base64 解码失败", "REF_IMAGE_BAD")
+        }
+        val res = normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
+            ?: prefs.resolution?.takeIf { it.contains('x') }
+            ?: prefs.ratio?.let(::ratioToSize)
+            ?: "1024x1024"
+        android.util.Log.i("ProviderGateway", "openAiImageEditsMultipart: 参考图 ${prefs.referenceImages.size} 张，bytes=${bytes.size}B size=$res")
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("model", model.name)
+            .addFormDataPart("prompt", prefs.prompt)
+            .addFormDataPart("n", "1")
+            .addFormDataPart("size", res)
+            .addFormDataPart("image", "reference.png", bytes.toRequestBody("image/png".toMediaType()))
+            .build()
+        val resp = executeMultipart(channel, secrets, "/images/edits", body)
+        val data = resp.jsonObject["data"]?.jsonArray ?: throw TapcreatorException("上游未返回图片", "UPSTREAM_EMPTY")
+        val first = data.firstOrNull()?.jsonObject ?: throw TapcreatorException("上游未返回图片", "UPSTREAM_EMPTY")
+        val b64out = first["b64_json"]?.jsonPrimitive?.content
+        val url = first["url"]?.jsonPrimitive?.content
+        return when {
+            b64out != null && b64out.isNotEmpty() -> UpstreamResult(kind = MediaKind.IMAGE, mediaBytes = decodeB64(b64out), mime = "image/*")
+            url != null && url.startsWith("http") -> UpstreamResult(kind = MediaKind.IMAGE, mediaUrl = url, mime = "image/*")
+            else -> throw TapcreatorException("上游未返回可下载图片", "UPSTREAM_EMPTY")
+        }
     }
 
     /** OpenAI 兼容 /images/generations 图生图；带参考图时尽力上送 image 参数（400/422 明确报错不静默） */
@@ -895,6 +927,35 @@ class ProviderGateway @Inject constructor(
             else -> "网络请求失败：${e.message}"
         }
         return TapcreatorException(friendly, "NETWORK")
+    }
+
+    /** multipart POST（/images/edits 图生图）：与 execute 同构，仅 body 为 MultipartBody */
+    private fun executeMultipart(channel: Channel, secrets: ChannelSecrets, endpoint: String, body: okhttp3.MultipartBody): kotlinx.serialization.json.JsonObject {
+        val base = normalizeBase(channel.baseUrl)
+        var lastHttp: Pair<Int, String>? = null
+        for (url in endpointUrls(base, endpoint)) {
+            val builder = Request.Builder().url(url).post(body)
+            if (secrets.apiKey.isNotBlank()) builder.header("Authorization", "Bearer ${secrets.apiKey}")
+            try {
+                val parsed = callWithRetry(builder).use { resp ->
+                    val text = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) {
+                        lastHttp = resp.code to text
+                        if (resp.code != 404) throw TapcreatorException(upstreamError(resp, text, url), "UPSTREAM_HTTP")
+                        null
+                    } else if (text.isBlank()) {
+                        throw TapcreatorException("上游返回空响应：$url", "UPSTREAM_EMPTY")
+                    } else {
+                        json.parseToJsonElement(text).jsonObject
+                    }
+                }
+                if (parsed != null) return parsed
+            } catch (se: SerializationException) {
+                throw TapcreatorException("上游响应无法解析：$url", "UPSTREAM_BAD_BODY")
+            }
+        }
+        val (code, text) = lastHttp ?: (0 to "")
+        throw TapcreatorException(upstreamUrlError(code, text), "UPSTREAM_HTTP")
     }
 
     private fun execute(channel: Channel, secrets: ChannelSecrets, endpoint: String, body: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject {
