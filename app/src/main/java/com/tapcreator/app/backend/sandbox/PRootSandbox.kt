@@ -327,6 +327,27 @@ class PRootSandbox @Inject constructor(
      */
     private fun startPRoot() {
         val workDir = File(context.filesDir, "media").apply { mkdirs() }
+        // 诊断自检：先直跑 proot --version（不依赖 loader/rootfs/绑定），
+        // 区分「二进制 exec / 动态库加载问题」（无输出或 CANNOT LINK）与「沙箱内部问题」。
+        // Android app 派生子进程的 linker 可能忽略 LD_LIBRARY_PATH（namespace permitted paths 限制），
+        // 若 libtalloc.so.2 找不到会导致 proot 根本不是起来——这里把真实 stderr 带进日志供定位。
+        runCatching {
+            val probe = ProcessBuilder(prootBinary.absolutePath, "--version")
+                .redirectErrorStream(true)
+                .apply { environment()["LD_LIBRARY_PATH"] = "${libtallocLib.parentFile.absolutePath}:${File(context.applicationInfo.nativeLibraryDir).absolutePath}" }
+                .start()
+            // 轮询读取（proot --version 瞬时返回），最多 5s
+            val deadline = System.currentTimeMillis() + 5_000L
+            val out = StringBuilder()
+            while (System.currentTimeMillis() < deadline) {
+                while (probe.inputStream.available() > 0) out.append(probe.inputStream.read().toChar())
+                if (probe.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS)) break
+            }
+            if (probe.isAlive) probe.destroyForcibly()
+            android.util.Log.w(TAG, "startPRoot: proot --version 探测 => exit=${runCatching { probe.exitValue() }.getOrDefault(-1)} 输出=$out")
+        }.onFailure { e ->
+            android.util.Log.e(TAG, "startPRoot: proot --version 探测异常 ${e.javaClass.simpleName}: ${e.message}")
+        }
         // PRoot 绑定要求目标路径在 rootfs 内已存在；Alpine minirootfs 精简，先建目录
         listOf("dev", "proc", "sys", "tmp", "etc", "root", "run", "var", "home", "work")
             .forEach { File(rootfsDir, it).mkdirs() }
@@ -405,10 +426,18 @@ class PRootSandbox @Inject constructor(
         // 失败路径：清理残留进程（避免重试时双 proot 争用 rootfs）+ 抛出带诊断的错误
         process?.let { runCatching { it.destroyForcibly() } }
         process = null
-        val preview = sb.toString().take(300)
-        android.util.Log.e(TAG, "startPRoot: shell 未就绪 输出预览=$preview")
+        val preview = sb.toString().take(4096)
+        android.util.Log.e(TAG, "startPRoot: shell 未就绪，完整输出=<${preview}>")
         throw TapcreatorException(
-            "沙箱 shell 未能启动（输出：$preview）——请确认设备为 arm64、rootfs 完整；仍失败可点「重置沙箱」重试",
+            if (preview.contains("CANNOT LINK", ignoreCase = true) || preview.contains("not found", ignoreCase = true)) {
+                "沙箱 shell 未能启动：proot 动态库加载失败（$preview）"
+            } else if (preview.contains("proot:", ignoreCase = true)) {
+                "沙箱 shell 未能启动：proot 报错（$preview）"
+            } else if (preview.contains("signal 11", ignoreCase = true) || preview.contains("segv", ignoreCase = true)) {
+                "沙箱 shell 未能启动：proot/loader SEGV（$preview）"
+            } else {
+                "沙箱 shell 未能启动（输出：$preview）——请确认设备为 arm64、rootfs 完整；仍失败可点「重置沙箱」重试"
+            },
             "PROOT_SHELL_FAILED"
         )
     }
