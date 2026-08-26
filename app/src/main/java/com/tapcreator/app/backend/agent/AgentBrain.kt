@@ -971,8 +971,8 @@ $styleBlock
                 }
                 val timeoutMs = (action.timeout ?: 30) * 1000L
                 // 确保沙箱就绪，并尝试安装基础包（网络可达时自动安装 curl/python3/ffmpeg）
-                runCatching { sandbox.ensureReady() }
-                runCatching { sandbox.ensureBasePackages() }
+                runCatching { sandbox.ensureReady() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] ${e.message}") }
+                runCatching { sandbox.ensureBasePackages() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] 基础包安装失败：${e.message}") }
                 val result = try {
                     sandbox.exec(cmd, timeoutMs = timeoutMs)
                 } catch (e: Exception) {
@@ -996,8 +996,8 @@ $styleBlock
                 val lang = action.language?.trim()?.lowercase()?.takeIf { it in setOf("python", "sh") } ?: "sh"
                 val ext = if (lang == "python") "py" else "sh"
                 val scriptName = "agent_script_${System.nanoTime()}.$ext"
-                runCatching { sandbox.ensureReady() }
-                runCatching { sandbox.ensureBasePackages() }
+                runCatching { sandbox.ensureReady() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] ${e.message}") }
+                runCatching { sandbox.ensureBasePackages() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] 基础包安装失败：${e.message}") }
                 // 写入脚本到沙箱 media 目录
                 val writeCmd = "cat > /work/media/$scriptName << 'EOF'\n$content\nEOF"
                 val writeResult = sandbox.exec(writeCmd, timeoutMs = 10_000L)
@@ -1021,8 +1021,8 @@ $styleBlock
                     st.trace += ChatMessage("user", "[工具错误] install_package 需提供 package（包名）。")
                     return ActionOutcome.CONTINUE
                 }
-                runCatching { sandbox.ensureReady() }
-                runCatching { sandbox.ensureBasePackages() }
+                runCatching { sandbox.ensureReady() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] ${e.message}") }
+                runCatching { sandbox.ensureBasePackages() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] 基础包安装失败：${e.message}") }
                 val result = sandbox.installPackage(pkg)
                 if (result.isSuccess) {
                     st.trace += ChatMessage("user", "[观察] 已安装包「$pkg」。可在 shell_execute 中使用。")

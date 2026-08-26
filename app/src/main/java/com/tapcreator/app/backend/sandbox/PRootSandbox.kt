@@ -34,12 +34,24 @@ class PRootSandbox @Inject constructor(
     companion object {
         private const val TAG = "PRootSandbox"
         private const val ROOTFS_DIR = "alpine-rootfs"
-        private const val PROOT_ASSET = "proot-aarch64"
-        private const val ALPINE_ROOTFS_ASSET = "alpine-minirootfs.tar.gz"
+        private const val ALPINE_ROOTFS_ASSET = "alpine-rootfs.bin" // 内容为 gzip（AGP 会把 .gz 资产解压改名，故用 .bin）
         // 沙箱内的工作目录（映射到 Android 私有 filesDir/media）
         private const val SANDBOX_WORK = "/work"
+        // proot 本体与 ELF loader 以 .so 打进 jniLibs（nativeLibraryDir）：
+        // Android 10+ 的 W^X 策略禁止执行 app files/ 下的文件（app_data_file，chmod +x 也 EACCES），
+        // 只有 nativeLibraryDir（lib/**/*.so，apk_data_file）可执行。proot 与 loader 都必须放这里。
+        // 参考：OpenMinis（proot+Alpine minirootfs）与 OperitTerminalCore（proot-distro+Ubuntu）的沙箱配置。
+        private const val PROOT_SO = "libproot.so"
+        private const val PROOT_LOADER_SO = "libproot-loader.so"
+        // proot 是动态链接（Termux 系），依赖 libtalloc.so.2（Android 24 aarch64，Termux 官方构建）。
+        // 该库文件名非 .so 结尾（AGP jniLibs 只打 *.so），故放 assets 启动时复制到 filesDir 并注入 LD_LIBRARY_PATH；
+        // 动态库加载只需读+mmap，不受 app data 禁 exec 影响。
+        private const val LIBTALLOC_ASSET = "libtalloc.so.2"
+        private const val PROOT_LIBS_DIR = "proot-libs"
         /** 单次 exec 输出的最大字节数（超出截断，防 OOM） */
         private const val MAX_OUTPUT_BYTES = 1_048_576 // 1MB
+        /** 等待沙箱 shell 就绪标记的最长时间（仅等 shell 启动，不等 apk 安装） */
+        private const val READY_TIMEOUT_MS = 10_000L
     }
 
     private val ready = AtomicBoolean(false)
@@ -49,8 +61,17 @@ class PRootSandbox @Inject constructor(
     /** 沙箱 rootfs 根目录（App 私有目录下） */
     private val rootfsDir: File get() = File(context.filesDir, ROOTFS_DIR).apply { mkdirs() }
 
-    /** PRoot 二进制路径（从 assets 复制到私有目录） */
-    private val prootBinary: File get() = File(context.filesDir, "proot")
+    /** PRoot 本体：nativeLibraryDir（唯一可执行的位置） */
+    private val prootBinary: File get() = File(context.applicationInfo.nativeLibraryDir, PROOT_SO)
+
+    /** PRoot ELF loader：Termux 官方构建（入库时校验 sha256=44ef39c1...），位于 nativeLibraryDir 以绕过 W^X 禁 exec（运行仅检查存在与大小） */
+    private val prootLoader: File get() = File(context.applicationInfo.nativeLibraryDir, PROOT_LOADER_SO)
+
+    /** PRoot 临时目录：loader 提取/上行数据（filesDir 下仅作可写目录，loader 本身走 PROOT_LOADER） */
+    private val prootTmpDir: File get() = File(context.filesDir, "proot-tmp").apply { mkdirs() }
+
+    /** libtalloc.so.2 运行时位置（assets 复制而来，供 proot 动态链接加载） */
+    private val libtallocLib: File get() = File(context.filesDir, "$PROOT_LIBS_DIR/${LIBTALLOC_ASSET}")
 
     /** 沙箱内可访问的媒体目录（映射到 App 私有 media 目录） */
     fun sandboxMediaDir(): String = SANDBOX_WORK + "/media"
@@ -66,12 +87,21 @@ class PRootSandbox @Inject constructor(
         if (ready.get() && process?.isAlive == true) return
 
         withContext(Dispatchers.IO) {
-            // 1. 复制 PRoot 二进制（如不存在或大小为 0）
-            if (!prootBinary.exists() || prootBinary.length() == 0L) {
-                context.assets.open(PROOT_ASSET).use { input ->
-                    prootBinary.outputStream().use { output -> input.copyTo(output) }
+            // 1. 校验 PRoot 本体与 loader 在 nativeLibraryDir（jniLibs .so，安装时解压）。
+            //    它们不能放 filesDir：Android 10+ W^X 禁止执行 app_data_file，复制下来也 exec EACCES。
+            if (!prootBinary.exists() || prootBinary.length() < 100_000) {
+                throw TapcreatorException("PRoot 二进制缺失或损坏（${prootBinary.absolutePath}）", "PROOT_MISSING")
+            }
+            if (!prootLoader.exists() || prootLoader.length() < 4_000) {
+                throw TapcreatorException("PRoot loader 缺失或损坏（${prootLoader.absolutePath}）", "PROOT_LOADER_MISSING")
+            }
+            // 1.5 复制 libtalloc.so.2（proot 动态依赖）到 filesDir 供链接器加载
+            if (!libtallocLib.exists() || libtallocLib.length() < 10_000) {
+                libtallocLib.parentFile?.mkdirs()
+                context.assets.open(LIBTALLOC_ASSET).use { input ->
+                    libtallocLib.outputStream().use { output -> input.copyTo(output) }
                 }
-                prootBinary.setExecutable(true)
+                android.util.Log.i(TAG, "ensureReady: libtalloc 复制完成 ${libtallocLib.length()}B")
             }
 
             // 2. 解压 Alpine rootfs（首次启动或 rootfs 不完整时）
@@ -127,9 +157,11 @@ class PRootSandbox @Inject constructor(
             android.util.Log.w(TAG, "reset: 删除 ${rootfsDir.absolutePath}")
             val deleted = rootfsDir.deleteRecursively()
             rootfsDir.mkdirs()
-            // 删除 PRoot 二进制（下次重新复制）
-            val prootDeleted = prootBinary.delete()
-            android.util.Log.w(TAG, "reset: rootfs deleted=$deleted prootDeleted=$prootDeleted")
+            // 清理 proot 运行期临时目录与 libtalloc 副本（下次 ensureReady 重新生成）
+            runCatching { prootTmpDir.deleteRecursively() }
+            runCatching { libtallocLib.parentFile?.deleteRecursively() }
+            // proot/loader 位于 nativeLibraryDir（系统安装期解压），不应删除，由系统管理
+            android.util.Log.w(TAG, "reset: rootfs deleted=$deleted")
         }
     }
 
@@ -262,12 +294,18 @@ class PRootSandbox @Inject constructor(
 
     /**
      * 启动 PRoot 交互进程：绑定 rootfs + 系统目录 + work/media 目录。
-     * 必须绑定宿主的 /dev /proc /sys —— 精简 Alpine rootfs 里没有这些挂载点，
-     * 缺了会导致 sh/apk 启动失败（表现为"沙箱没启动"）。
+     * 关键配置（对照参考项目 OpenMinis/OperitTerminalCore 修正）：
+     *  - proot 本体与 ELF loader 必须位于 nativeLibraryDir（jniLibs .so，唯一可执行位置）
+     *  - loader 通过 PROOT_LOADER 显式指定，避免 proot 提取 loader 到 app data（W^X 禁 exec）
+     *  - 绑定目标（/dev /proc /sys 等）必须先存在于 rootfs 内
+     *  - PROOT_TMP_DIR 指向可写目录
      * 用 sh -i 保持交互模式，通过 stdin/stdout 发送命令、读取输出。
      */
     private fun startPRoot() {
         val workDir = File(context.filesDir, "media").apply { mkdirs() }
+        // PRoot 绑定要求目标路径在 rootfs 内已存在；Alpine minirootfs 精简，先建目录
+        listOf("dev", "proc", "sys", "tmp", "etc", "root", "run", "var", "home", "work")
+            .forEach { File(rootfsDir, it).mkdirs() }
         val builder = ProcessBuilder(
             prootBinary.absolutePath,
             "--rootfs=${rootfsDir.absolutePath}",
@@ -281,6 +319,20 @@ class PRootSandbox @Inject constructor(
             "/bin/sh"
         )
         builder.redirectErrorStream(true)
+        // loader 只能放 nativeLibraryDir（app data 不可执行）；PROOT_LOADER 显式指过去，
+        // 否则 proot 会把内置 loader 解到 PROOT_TMP_DIR（app data）→ 第一条 /bin/sh execve EACCES
+        builder.environment().putAll(
+            mapOf(
+                "PROOT_LOADER" to prootLoader.absolutePath,
+                "PROOT_TMP_DIR" to prootTmpDir.absolutePath,
+                "HOME" to "/root",
+                "TERM" to "dumb",
+                "PATH" to "/usr/bin:/usr/sbin:/bin:/sbin",
+                // libtalloc.so.2 在 filesDir/proot-libs（动态库加载只需读+mmap）；
+                // nativeLibraryDir 亦保留，供其它可能依赖的库检索
+                "LD_LIBRARY_PATH" to "${libtallocLib.parentFile.absolutePath}:${File(context.applicationInfo.nativeLibraryDir).absolutePath}",
+            )
+        )
         process = builder.start()
 
         // 发送初始化命令：设置 PATH + 后台安装基础包（不阻塞就绪）
@@ -300,21 +352,41 @@ class PRootSandbox @Inject constructor(
             flush()
         }
 
-        // 等待 ready 标记（最长 10 秒，仅等 shell 启动，不等 apk 安装）
-        val stdout = process?.inputStream ?: return
-        val readyTimeout = 10_000L
+        // 等待 shell 就绪标记（最长 READY_TIMEOUT_MS，仅等 shell 启动，不等 apk 安装）。
+        // 未出现标记 = /bin/sh 没起来（loader 缺失/不可执行/rootfs 缺 sh 等），必须明确失败并附诊断
+        val stdout = process?.inputStream ?: run {
+            process?.let { runCatching { it.destroyForcibly() } }
+            process = null
+            throw TapcreatorException("PRoot 进程无输出流", "PROOT_START_FAILED")
+        }
         val started = System.currentTimeMillis()
         val sb = StringBuilder()
-        try {
-            while (System.currentTimeMillis() - started < readyTimeout) {
-                val b = stdout.read()
-                if (b < 0) break
+        var done = false
+        while (!done && System.currentTimeMillis() - started < READY_TIMEOUT_MS) {
+            // available() 轮询：避免阻塞 read 让超时失效（proot 活着但无输出时会卡死 mutex）
+            while (stdout.available() > 0) {
+                val b = try { stdout.read() } catch (e: Exception) { -1 }
+                if (b < 0) { done = true; break }
                 sb.append(b.toChar())
-                if (sb.contains("___SANDBOX_READY___")) return
+                if (sb.length > MAX_OUTPUT_BYTES) { done = true; break }
             }
-        } catch (e: Exception) {
-            // 超时或读取异常，继续——沙箱可能仍可用
+            if (sb.contains("___SANDBOX_READY___")) {
+                // 自检：shell 已响应初始化命令 → 沙箱真正可用（进程存活≠sh 可用）
+                android.util.Log.i(TAG, "startPRoot: shell ready")
+                return
+            }
+            if (process?.isAlive != true) break
+            Thread.sleep(50)
         }
+        // 失败路径：清理残留进程（避免重试时双 proot 争用 rootfs）+ 抛出带诊断的错误
+        process?.let { runCatching { it.destroyForcibly() } }
+        process = null
+        val preview = sb.toString().take(300)
+        android.util.Log.e(TAG, "startPRoot: shell 未就绪 输出预览=$preview")
+        throw TapcreatorException(
+            "沙箱 shell 未能启动（输出：$preview）——请确认设备为 arm64、rootfs 完整；仍失败可点「重置沙箱」重试",
+            "PROOT_SHELL_FAILED"
+        )
     }
 
     /**
