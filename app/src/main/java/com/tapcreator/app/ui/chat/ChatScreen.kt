@@ -1456,6 +1456,7 @@ private fun MediaPreview(
 ) {
     val file = card.mediaPath?.let { File(it) }?.takeIf { it.exists() }
         ?: card.previewPath?.let { File(it) }?.takeIf { it.exists() }
+    val context = LocalContext.current
     // 提示词区可折叠：增强卡默认展开全文直接看到优化后的提示词，普通卡默认收起
     var promptExpanded by remember { mutableStateOf(card.promptEnhanced) }
     Dialog(onDismissRequest = onDismiss) {
@@ -1556,6 +1557,17 @@ private fun MediaPreview(
                                     )
                                 }
                                 CardButton(if (promptExpanded) "收起" else "展开", onClick = { promptExpanded = !promptExpanded }, tint = MaterialTheme.colorScheme.tertiaryContainer, contentColor = MaterialTheme.colorScheme.onTertiaryContainer)
+                                // 复制提示词到剪贴板，便于再次使用
+                                CardButton(
+                                    "复制",
+                                    onClick = {
+                                        val clip = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        clip.setPrimaryClip(android.content.ClipData.newPlainText("提交提示词", card.content))
+                                        android.widget.Toast.makeText(context, "提示词已复制", android.widget.Toast.LENGTH_SHORT).show()
+                                    },
+                                    tint = MaterialTheme.colorScheme.tertiaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                                )
                             }
                             // 收起时只显一行预览，展开显全文
                             Text(

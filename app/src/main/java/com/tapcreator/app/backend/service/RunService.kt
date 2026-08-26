@@ -596,7 +596,12 @@ class RunService @Inject constructor(
         var audio: String? = null
 
         fun addImage(path: String?) {
-            val f = path?.let(::File)?.takeIf { it.exists() } ?: return
+            val f = path?.let(::File)?.takeIf { it.exists() }
+            if (f == null) {
+                // 参考图文件缺失 → 上送时静默丢弃，导致「参考没生效」。记录日志供定位。
+                android.util.Log.w("RunService", "resolveReferences: 图片参考文件不存在已跳过 path=$path")
+                return
+            }
             // 数量上限：多张原图 base64 内联会把请求体撑到数十 MB，触发网关断连；超限直接截断
             if (images.size >= MAX_REF_IMAGES) return
             runCatching {

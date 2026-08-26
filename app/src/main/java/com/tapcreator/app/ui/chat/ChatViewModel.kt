@@ -682,19 +682,30 @@ class ChatViewModel @Inject constructor(
         if (dropped > 0) {
             toast("已忽略 $dropped 个不适用于${if (target == MediaKind.IMAGE) "图像" else "视频"}生成的参考")
         }
+        // 参考图文件缺失校验：勾选了图片参考但磁盘文件不存在 → 上送时会被静默丢弃（结果与参考无关）。
+        // 这里明确剔除并提示，避免「选了参考却没生效」的困惑。
+        fun refFileOk(mediaPath: String?, previewPath: String?): Boolean =
+            (mediaPath?.let { File(it).exists() } == true) || (previewPath?.let { File(it).exists() } == true)
+        val missingCards = usableCards.filter { it.kind == MediaKind.IMAGE && !refFileOk(it.mediaPath, it.previewPath) }
+        val missingAssets = usableAssets.filter { it.kind == MediaKind.IMAGE && !refFileOk(it.mediaPath, it.previewPath) }
+        if (missingCards.isNotEmpty() || missingAssets.isNotEmpty()) {
+            toast("${missingCards.size + missingAssets.size} 张参考图文件缺失，已忽略（磁盘文件可能已被清理）")
+        }
+        val usableCardsValid = usableCards.filterNot { it in missingCards }
+        val usableAssetsValid = usableAssets.filterNot { it in missingAssets }
         // 参考图数量上限：与 RunService 上送截断一致（保留前 8 张，卡片优先）。超限时从尾部删图，保留前面的参考。
-        val over = (usableCards.count { it.kind == MediaKind.IMAGE } + usableAssets.count { it.kind == MediaKind.IMAGE }) - MAX_REF_ASSETS
+        val over = (usableCardsValid.count { it.kind == MediaKind.IMAGE } + usableAssetsValid.count { it.kind == MediaKind.IMAGE }) - MAX_REF_ASSETS
         val (limitedCards, limitedAssets) = if (over > 0) {
             var dropRemain = over
             // 先删素材尾部图片（RunService 消费顺序：卡片优先、素材在后），仍超再删卡片尾部
-            val assets = usableAssets.toMutableList()
+            val assets = usableAssetsValid.toMutableList()
             while (dropRemain > 0 && assets.isNotEmpty()) {
                 val idx = assets.indexOfLast { it.kind == MediaKind.IMAGE }
                 if (idx < 0) break
                 assets.removeAt(idx)
                 dropRemain--
             }
-            val cards = usableCards.toMutableList()
+            val cards = usableCardsValid.toMutableList()
             while (dropRemain > 0 && cards.isNotEmpty()) {
                 val idx = cards.indexOfLast { it.kind == MediaKind.IMAGE }
                 if (idx < 0) break
@@ -704,7 +715,7 @@ class ChatViewModel @Inject constructor(
             toast("参考图超过 $MAX_REF_ASSETS 张上限，仅保留前 $MAX_REF_ASSETS 张")
             cards.toList() to assets.toList()
         } else {
-            usableCards to usableAssets
+            usableCardsValid to usableAssetsValid
         }
                 // 手动分辨率有效性校验：图片强制 WxH 数字（64..8192 正整数）；视频放行模型声明档位（768P/2K/4K），
         // 两者皆非则回落模型默认并提示。
