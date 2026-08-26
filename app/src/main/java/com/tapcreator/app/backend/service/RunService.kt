@@ -210,6 +210,22 @@ class RunService @Inject constructor(
         val model = router.toDomain(modelEntity)
 
         val refs = resolveReferences(referencedCardIds, referencedAssetPaths)
+        // 图片参考「意图」校验：用户选了图片参考（卡片或素材）但没提取到图（文件缺失/被清理）时，
+        // 明确报错而非静默生成与参考无关的结果——否则用户只看到「参考没生效」却不知道原因。
+        val wantImageRef = run {
+            var want = 0
+            referencedCardIds.distinct().forEach { id ->
+                db.cardDao().byId(id)?.let { if (it.kind == MediaKind.IMAGE) want++ }
+            }
+            referencedAssetPaths.distinct().forEach { p ->
+                db.assetDao().byMediaPath(p).firstOrNull()?.let { if (it.kind == MediaKind.IMAGE) want++ }
+            }
+            want
+        }
+        if (wantImageRef > 0 && refs.images.isEmpty()) {
+            android.util.Log.w("RunService", "executeLoop: 选了 $wantImageRef 张图片参考但 referenceImages 为空（文件缺失？）")
+            return failRun(run.id, "已选 $wantImageRef 张图片参考但未能加载（图片文件可能缺失或被清理），请重新选择参考")
+        }
         val enrichedPref = pref.copy(referenceTexts = refs.texts, referenceImages = refs.images)
 
         var cardSeq = db.cardDao().maxSequence(run.conversationId) + 1
