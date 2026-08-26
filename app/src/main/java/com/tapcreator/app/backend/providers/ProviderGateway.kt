@@ -619,6 +619,34 @@ class ProviderGateway @Inject constructor(
     }
 
     private fun openAiImage(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+        // 参考图生图：按模型类型选路径 + 兜底。
+        // 多模态生成模型（SenseNova U1 / Seedream / 豆包 / 通义万相 / 可图等国产原生多模态）走 /chat/completions
+        // 多模态 messages（image_url + text）+ modalities:["image"]——这是它们真正识别参考图的方式，
+        // 用 /images/generations 的 image 参数会被忽略（参考图根本没提交，结果与参考无关）。
+        // 若多模态路径失败，兜底回退 /images/generations + image 参数；仍失败则明确报错，绝不静默丢参考。
+        if (isMultimodalGenModel(channel, model)) {
+            return try {
+                openAiChatImageMultimodal(channel, secrets, model, prefs)
+            } catch (e: TapcreatorException) {
+                if (prefs.referenceImages.isNotEmpty() && e.code != "IMAGE_REF_NOT_SUPPORTED") {
+                    android.util.Log.w("ProviderGateway", "多模态图生图失败(${e.message})，回退 /images/generations 兜底")
+                    try {
+                        return openAiImageGenerations(channel, secrets, model, prefs)
+                    } catch (e2: TapcreatorException) {
+                        throw TapcreatorException(
+                            "参考图生图失败：多模态路径 ${e.message}；images/generations 兜底 ${e2.message}",
+                            "IMAGE_GEN_FAILED"
+                        )
+                    }
+                }
+                throw e
+            }
+        }
+        return openAiImageGenerations(channel, secrets, model, prefs)
+    }
+
+    /** OpenAI 兼容 /images/generations 图生图；带参考图时尽力上送 image 参数（400/422 明确报错不静默） */
+    private fun openAiImageGenerations(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val refSnippet = prefs.referenceTexts.joinToString("\n", prefix = "参考素材：", postfix = "\n\n")
         // 每次只请求一张：数量(count)由 TaskExecutor 在设备内循环调用保证，便于逐卡落库与进度汇报
         val res = normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
@@ -663,6 +691,98 @@ class ProviderGateway @Inject constructor(
             b64 != null -> UpstreamResult(kind = MediaKind.IMAGE, mediaBytes = decodeB64(b64), mime = "image/*")
             else -> throw TapcreatorException("上游未返回可下载图片", "UPSTREAM_EMPTY")
         }
+    }
+
+    /** 是否「原生多模态」图生图模型（SenseNova U1 / Seedream / 豆包 / 通义万相 / 可图 / CogView 等国产）。
+     *  这类模型图生图须走 /chat/completions 多模态（image_url+text），/images/generations 的 image 参数会被忽略。 */
+    private fun isMultimodalGenModel(channel: Channel, model: ModelOption): Boolean {
+        val base = channel.baseUrl.lowercase()
+        val mn = model.name.lowercase()
+        return base.contains("sensenova") || base.contains("sensetime") ||
+            mn.contains("u1") || mn.contains("u1.5") || mn.contains("日日新") || mn.contains("sensenova") ||
+            mn.contains("seedream") || mn.contains("doubao") || mn.contains("豆包") ||
+            mn.contains("wanx") || mn.contains("万相") || mn.contains("tongyi") || mn.contains("通义") ||
+            mn.contains("kolors") || mn.contains("可图") || mn.contains("cogview") || mn.contains("智谱")
+    }
+
+    /**
+     * SenseNova U1 系列的多模态图生图：POST /chat/completions，user content 为
+     * [image_url(参考图 data URI)…, text(提示词)]，modalities=["image"]，image_config 控制出图尺寸。
+     * 参考图多张全部上送（官方 it2i 模式），返回 images[].image_url.data URI。
+     */
+    private fun openAiChatImageMultimodal(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+        val refImages = prefs.referenceImages
+        android.util.Log.i("ProviderGateway", "openAiChatImageMultimodal: 参考图 ${refImages.size} 张，模型 ${model.name}")
+        val res = normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
+            ?: prefs.resolution?.takeIf { it.contains('x') }
+            ?: prefs.ratio?.let(::ratioToSize)
+            ?: "2048x2048"
+        val userContent = buildJsonArray {
+            // 参考图：多张全提交（data URI，与官方 local_image_to_data_url 一致）
+            refImages.forEach { dataUri ->
+                add(buildJsonObject {
+                    put("type", "image_url")
+                    put("image_url", buildJsonObject { put("url", dataUri) })
+                })
+            }
+            add(buildJsonObject {
+                put("type", "text")
+                put("text", prefs.prompt)
+            })
+        }
+        val body = buildJsonObject {
+            put("model", model.name)
+            put("messages", buildJsonArray {
+                add(buildJsonObject {
+                    put("role", "system")
+                    put("content", "你是图像生成与编辑助手。基于用户提供的参考图与文字描述生成图片：图生图时保留参考图中用户未要求改变的所有属性，只按描述进行修改或生成。")
+                })
+                add(buildJsonObject { put("role", "user"); put("content", userContent) })
+            })
+            put("modalities", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("image")) })
+            put("stream", false)
+            put("n", 1)
+            put("image_config", buildJsonObject {
+                // 参考图存在时保持与输入同分辨率（原生多模态），否则按档位
+                if (res.contains('x')) {
+                    val w = res.substringBefore('x').trim().toIntOrNull()
+                    val h = res.substringAfter('x').trim().toIntOrNull()
+                    if (w != null && h != null) {
+                        put("dynamic_resolution", false)
+                        put("width", w)
+                        put("height", h)
+                    } else {
+                        put("dynamic_resolution", true)
+                    }
+                } else {
+                    put("image_size", res) // 档位：1K/1.5K/2K/4K
+                    put("dynamic_resolution", true)
+                }
+                put("image_type", "jpeg")
+                put("seed", 42)
+                put("aspect_ratio", "1:1")
+            })
+        }
+        val resp = execute(channel, secrets, "/chat/completions", body)
+        // 解析：choices[0].message.images[].image_url.url（data URI）
+        val message = resp.jsonObject["choices"]?.jsonArray?.firstOrNull()
+            ?.jsonObject?.get("message")?.jsonObject
+        val images = message?.get("images")?.jsonArray.orEmpty()
+        for (item in images) {
+            val url = item.jsonObject.get("image_url")?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull
+            if (url != null && url.startsWith("data:image")) {
+                val b64 = url.substringAfter(";base64,", "")
+                if (b64.isNotEmpty()) {
+                    return UpstreamResult(kind = MediaKind.IMAGE, mediaBytes = decodeB64(b64), mime = "image/*")
+                }
+            }
+        }
+        // 兜底：部分实现把图片直接放 b64_json
+        val b64json = message?.get("b64_json")?.jsonPrimitive?.contentOrNull
+        if (!b64json.isNullOrEmpty()) {
+            return UpstreamResult(kind = MediaKind.IMAGE, mediaBytes = decodeB64(b64json), mime = "image/*")
+        }
+        throw TapcreatorException("上游未返回图片（chat 多模态响应无 images）", "UPSTREAM_EMPTY")
     }
 
     private fun openAiAudio(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
