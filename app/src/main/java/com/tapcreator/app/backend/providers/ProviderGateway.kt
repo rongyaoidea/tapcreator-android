@@ -628,6 +628,7 @@ class ProviderGateway @Inject constructor(
         // 图生图参考：把用户勾选参考卡片/素材的首张图片随请求上送（data URI），
         // 修复「参考其他卡片生成结果不像」——此前 IMAGE 生成路径完全没把参考图提交给模型
         val imageRef = prefs.referenceImages.firstOrNull()
+        android.util.Log.i("ProviderGateway", "openAiImage: 参考图 ${prefs.referenceImages.size} 张，imageRef=${imageRef?.take(48)}... 是否上送=${imageRef != null}")
         fun body(withImage: Boolean) = buildJsonObject {
             put("model", model.name)
             put("prompt", refSnippet + prefs.prompt)
@@ -639,10 +640,15 @@ class ProviderGateway @Inject constructor(
         val resp = try {
             execute(channel, secrets, "/images/generations", body(withImage = imageRef != null))
         } catch (e: TapcreatorException) {
-            // 上游不接受 image 参数（400/422 参数不支持）：去掉参考图降级为纯文生图，避免整体失败；
-            // 其余 4xx（429 限流/401 鉴权/413 体过大等）透传，不误吞真实错误
+            // 上游不接受 image 参数（400/422 参数不支持）：不静默降级——
+            // 否则用户「参考卡片/素材」的图被悄悄丢弃，结果与参考完全无关（用户已反馈）。
+            // 明确报错让用户知道当前模型不支持图生图参考，可去参考或更换支持图生图的模型。
             if (imageRef != null && e.code == "UPSTREAM_HTTP" && Regex("HTTP (400|422)").containsMatchIn(e.message.orEmpty())) {
-                execute(channel, secrets, "/images/generations", body(withImage = false))
+                android.util.Log.w("ProviderGateway", "openAiImage: 上游拒绝 image 参数(${e.message})，参考图未提交")
+                throw TapcreatorException(
+                    "当前模型不支持图生图参考（上游拒绝 image 参数）。请去掉参考图，或更换支持图生图的模型",
+                    "IMAGE_REF_NOT_SUPPORTED"
+                )
             } else {
                 throw e
             }
