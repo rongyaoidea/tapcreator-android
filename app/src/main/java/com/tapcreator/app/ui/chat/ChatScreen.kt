@@ -114,7 +114,6 @@ fun ChatScreen(
     onBack: () -> Unit,
     viewModel: ChatViewModel = hiltViewModel(),
     onOpenTasks: (String) -> Unit = {},
-    onPickFromLibrary: () -> Unit = {},
 ) {
     val messages by viewModel.messages.collectAsState()
     val cards by viewModel.cards.collectAsState()
@@ -138,6 +137,13 @@ fun ChatScreen(
     var previewCard by remember { mutableStateOf<CardEntity?>(null) }
     // 画布选取参考卡模式：点击「引用其他卡片」后关闭面板进入画布选卡，选中后回到面板
     var canvasPickingRef by remember { mutableStateOf(false) }
+    // 素材库选取参考模式：点击「从素材库引用」后打开全屏选取器
+    var libraryPickerOpen by remember { mutableStateOf(false) }
+    // 打开发卡编辑面板的回调（供 CreationCard/InputBar 使用）：
+    // 从素材库选取完成或取消时重新打开编辑面板
+    fun reopenDraftEditor() {
+        draftEditorOpen = true
+    }
 
     LaunchedEffect(messages.size, cards.size) {
         if (listState.layoutInfo.totalItemsCount > 0) {
@@ -301,7 +307,7 @@ fun ChatScreen(
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                AgentSheet(viewModel, onDismiss = { agentOpen = false }, onPickFromLibrary = onPickFromLibrary)
+                AgentSheet(viewModel, onDismiss = { agentOpen = false }, onPickFromLibrary = { libraryPickerOpen = true })
             }
         }
     }
@@ -348,7 +354,7 @@ fun ChatScreen(
                         canvasPickingRef = true
                     }, onPickFromLibrary = {
                         draftEditorOpen = false
-                        onPickFromLibrary()
+                        libraryPickerOpen = true
                     })
                 }
             }
@@ -399,6 +405,45 @@ fun ChatScreen(
             onDismiss = { previewCard = null },
             onDownload = { viewModel.saveCardToGallery(card) { } },
         )
+    }
+
+    // 素材库选取参考：全屏 Dialog 显示 LibraryScreen，单击素材 = toggle 参考
+    if (libraryPickerOpen) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { libraryPickerOpen = false; reopenDraftEditor() },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background,
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(onClick = { libraryPickerOpen = false; reopenDraftEditor() }) {
+                            Text("返回", color = MaterialTheme.colorScheme.primary)
+                        }
+                        Text(
+                            "选取素材（已选 ${viewModel.selectedReferenceAssets.size}）",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { libraryPickerOpen = false; reopenDraftEditor() }) {
+                            Text("完成", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    com.tapcreator.app.ui.library.LibraryScreen(
+                        pickerMode = true,
+                        onPickAsset = { asset -> viewModel.toggleReferenceAsset(asset) },
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -873,6 +918,29 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit, onPickFromLibra
             androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
             UploadButton(vm)
             CardButton("素材库", onClick = onPickFromLibrary)
+        }
+        // 已选参考素材列表（Agent 上传的参考图/音频，带删除按钮）
+        if (vm.selectedReferenceAssets.isNotEmpty()) {
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                vm.selectedReferenceAssets.forEach { asset ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "· ${asset.title}（参考）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = { vm.toggleReferenceAsset(asset) },
+                            modifier = Modifier.size(28.dp).padding(0.dp),
+                            contentPadding = PaddingValues(0.dp),
+                        ) { Text("×", color = MaterialTheme.colorScheme.error) }
+                    }
+                }
+            }
         }
         if (showParams) {
             Column(

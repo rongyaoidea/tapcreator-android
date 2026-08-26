@@ -205,7 +205,9 @@ class PRootSandbox @Inject constructor(
     }
 
     /**
-     * 启动 PRoot 交互进程：绑定 rootfs + 映射 work/media 目录。
+     * 启动 PRoot 交互进程：绑定 rootfs + 系统目录 + work/media 目录。
+     * 必须绑定宿主的 /dev /proc /sys —— 精简 Alpine rootfs 里没有这些挂载点，
+     * 缺了会导致 sh/apk 启动失败（表现为"沙箱没启动"）。
      * 用 sh -i 保持交互模式，通过 stdin/stdout 发送命令、读取输出。
      */
     private fun startPRoot() {
@@ -213,7 +215,11 @@ class PRootSandbox @Inject constructor(
         val builder = ProcessBuilder(
             prootBinary.absolutePath,
             "--rootfs=${rootfsDir.absolutePath}",
-            "--cwd=$SANDBOX_WORK",
+            "--cwd=/",
+            // 绑定宿主系统目录：精简 rootfs 无 /dev /proc /sys，缺失会导致 apk/sh 启动失败
+            "--bind=/dev:/dev",
+            "--bind=/proc:/proc",
+            "--bind=/sys:/sys",
             "--bind=${workDir.absolutePath}:$SANDBOX_WORK/media",
             "--kill-on-exit",
             "/bin/sh"

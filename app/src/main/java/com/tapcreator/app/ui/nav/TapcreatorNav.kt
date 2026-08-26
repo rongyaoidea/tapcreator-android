@@ -55,8 +55,6 @@ private val TAB_ITEMS = listOf(
 @Composable
 fun TapcreatorNav(startRoute: String) {
     val nav = rememberNavController()
-    // 素材库选取模式：ChatScreen 调 onPickFromLibrary 时打开全屏 Dialog
-    var libraryPickerOpen by androidx.compose.runtime.mutableStateOf(false)
     // 全屏主题底色：确保深色模式下每个页面（含未铺满背景/转场瞬间）都落在主题底色上
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -111,7 +109,6 @@ fun TapcreatorNav(startRoute: String) {
                     ChatScreen(
                         onBack = { nav.popBackStack() },
                         onOpenTasks = { nav.navigate("tasks/$it") },
-                        onPickFromLibrary = { libraryPickerOpen = true },
                     )
                 }
                 composable(
@@ -138,41 +135,7 @@ fun TapcreatorNav(startRoute: String) {
             }
         }
 
-        // 素材库选取模式：全屏 Dialog 显示 LibraryScreen + 顶部完成按钮
-        if (libraryPickerOpen) {
-            androidx.compose.ui.window.Dialog(
-                onDismissRequest = { libraryPickerOpen = false },
-                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-            ) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background,
-                ) {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            TextButton(onClick = { libraryPickerOpen = false }) {
-                                Text("返回", color = MaterialTheme.colorScheme.primary)
-                            }
-                            Text(
-                                "选取素材",
-                                style = MaterialTheme.typography.titleMedium,
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(onClick = { libraryPickerOpen = false }) {
-                                Text("完成", color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        LibraryScreen()
-                    }
-                }
-            }
-        }
+        // 素材库选取模式：已移至 ChatScreen 内部（需访问 ChatViewModel 的参考状态）
     }
 }
 

@@ -232,18 +232,13 @@ class ChatViewModel @Inject constructor(
         setKind(kind)
     }
 
-    /** 关闭提交面板=放弃这次创作，只删当前这一张空白卡（不误删其它空白卡） */
+    /**
+     * 关闭提交面板=放弃这次编辑。只清空编辑现场，【不删除】空白卡——
+     * 卡片保留在画布上（runId='draft'），除非用户手动删除。
+     */
     fun clearDraft() {
-        val id = editingDraftId
         draftKind = null
         editingDraftId = null
-        if (id == null) return
-        viewModelScope.launch {
-            runCatching {
-                db.cardLinkDao().deleteForCard(id)
-                db.cardDao().hardDelete(id)
-            }
-        }
     }
 
     // ---------- 会话级 UI 状态持久化（创作编辑现场 + Agent 现场 + 模型偏好） ----------

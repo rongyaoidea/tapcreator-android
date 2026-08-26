@@ -69,6 +69,8 @@ private const val SENTINEL_UNASSIGNED = "__unassigned__"
 @Composable
 fun LibraryScreen(
     vm: LibraryViewModel = hiltViewModel(),
+    pickerMode: Boolean = false,
+    onPickAsset: ((AssetEntity) -> Unit)? = null,
 ) {
     val assets by vm.assets.collectAsState()
     val folders by vm.folders.collectAsState()
@@ -179,6 +181,10 @@ fun LibraryScreen(
                     items(shownAssets, key = { it.id }) { asset ->
                         AssetCell(
                             asset = asset,
+                            pickerMode = pickerMode,
+                            onPick = if (pickerMode && onPickAsset != null) {
+                                { onPickAsset.invoke(asset) }
+                            } else null,
                             onShare = {
                                 val file = asset.mediaPath ?: return@AssetCell
                                 if (File(file).exists()) shareFile(context, File(file), asset.mime)
@@ -389,14 +395,25 @@ private fun folderBadge(kind: String): String = when (kind) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AssetCell(asset: AssetEntity, onShare: () -> Unit, onSave: () -> Unit, onMove: () -> Unit, onDelete: () -> Unit) {
+private fun AssetCell(
+    asset: AssetEntity,
+    pickerMode: Boolean = false,
+    onPick: (() -> Unit)? = null,
+    onShare: () -> Unit,
+    onSave: () -> Unit,
+    onMove: () -> Unit,
+    onDelete: () -> Unit,
+) {
     var menu by remember { mutableStateOf(false) }
     Box(modifier = Modifier.aspectRatio(1f)) {
         Box(
             modifier = Modifier
                 .aspectRatio(1f)
-                // 单击：分享；长按：打开操作菜单（分享/保存/移动/删除）
-                .combinedClickable(onClick = onShare, onLongClick = { menu = true }),
+                // 选取模式：单击=选取/取消；否则：单击=分享
+                .combinedClickable(
+                    onClick = if (pickerMode && onPick != null) onPick else onShare,
+                    onLongClick = { menu = true },
+                ),
         ) {
             val path = asset.previewPath ?: asset.mediaPath
             if (path != null && File(path).exists()) {
