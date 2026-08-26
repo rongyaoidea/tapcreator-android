@@ -619,10 +619,26 @@ class ProviderGateway @Inject constructor(
     }
 
     private fun openAiImage(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
-        // 有参考图：优先多模态 chat 图生图（SenseNova U1 / Seedream / 通义万相 / 可图等国产原生多模态
-        // 模型真正识别参考图的方式，/images/generations 的 image 参数会被它们忽略）。
-        // 不依赖模型名识别——统一先试多模态，失败自动兜底 images/generations + image（纯 base64），
-        // 仍失败则明确报错，绝不静默丢参考。
+        // 商汤官方平台（token.sensenova.cn / api.sensenova.cn）图生图必须走 /v1/images/edits，
+        // image=纯 base64（官方文档：model=sensenova-u1.5-lite）。/images/generations 与 chat 多模态
+        // 都不会识别参考图 → 参考图被忽略、结果与参考无关。
+        if (prefs.referenceImages.isNotEmpty() && isSensenova(channel, model)) {
+            return try {
+                openAiImageEditsSensenova(channel, secrets, model, prefs)
+            } catch (e: TapcreatorException) {
+                android.util.Log.w("ProviderGateway", "SenseNova /images/edits 失败(${e.message})，兜底多模态 chat")
+                try {
+                    return openAiChatImageMultimodal(channel, secrets, model, prefs)
+                } catch (e2: TapcreatorException) {
+                    throw TapcreatorException(
+                        "参考图生图失败：/images/edits ${e.message}；多模态 chat 兜底 ${e2.message}",
+                        "IMAGE_GEN_FAILED"
+                    )
+                }
+            }
+        }
+        // 有参考图：优先多模态 chat 图生图（其它原生多模态模型），失败自动兜底 images/generations + image。
+        // 不依赖模型名识别——统一先试多模态，仍失败则明确报错，绝不静默丢参考。
         if (prefs.referenceImages.isNotEmpty()) {
             return try {
                 openAiChatImageMultimodal(channel, secrets, model, prefs)
@@ -639,6 +655,71 @@ class ProviderGateway @Inject constructor(
             }
         }
         return openAiImageGenerations(channel, secrets, model, prefs)
+    }
+
+    /** 是否商汤 SenseNova（日日新）官方平台渠道：baseUrl 或模型名含 sensenova/u1/日日新 */
+    private fun isSensenova(channel: Channel, model: ModelOption): Boolean {
+        val base = channel.baseUrl.lowercase()
+        val mn = model.name.lowercase()
+        return base.contains("sensenova") || base.contains("sensetime") ||
+            mn.contains("u1") || mn.contains("u1.5") || mn.contains("日日新") || mn.contains("sensenova")
+    }
+
+    /**
+     * 商汤官方平台图生图：POST /v1/images/edits（官方文档），image=纯 base64，model=sensenova-u1.5-lite 等。
+     * 参数：model/prompt/image/size/n/output_format/response_format/watermark/prompt_extend。
+     */
+    private fun openAiImageEditsSensenova(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+        val imageB64 = prefs.referenceImages.firstOrNull()?.substringAfter(";base64,", "")?.takeIf { it.isNotEmpty() }
+            ?: throw TapcreatorException("SenseNova 图生图缺少参考图 base64", "REF_IMAGE_EMPTY")
+        android.util.Log.i("ProviderGateway", "openAiImageEditsSensenova: 参考图 ${prefs.referenceImages.size} 张，size=${imageB64.take(24)}...")
+        val res = normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
+            ?: prefs.resolution?.takeIf { it.contains('x') }
+            ?: prefs.ratio?.let(::ratioToSize)
+            ?: "2048x2048"
+        val body = buildJsonObject {
+            put("model", model.name)
+            put("image", imageB64)
+            put("prompt", prefs.prompt)
+            put("size", normalizeEditsSize(res))
+            put("n", 1)
+            put("output_format", "png")
+            put("response_format", "b64_json")
+            put("watermark", false)
+            put("prompt_extend", false)
+        }
+        val resp = execute(channel, secrets, "/images/edits", body)
+        val data = resp.jsonObject["data"]?.jsonArray
+            ?: throw TapcreatorException("上游未返回图片", "UPSTREAM_EMPTY")
+        val first = data.firstOrNull()?.jsonObject ?: throw TapcreatorException("上游未返回图片", "UPSTREAM_EMPTY")
+        val b64 = first["b64_json"]?.jsonPrimitive?.content
+        val url = first["url"]?.jsonPrimitive?.content
+        return when {
+            b64 != null && b64.isNotEmpty() -> UpstreamResult(kind = MediaKind.IMAGE, mediaBytes = decodeB64(b64), mime = "image/*")
+            url != null && url.startsWith("http") -> UpstreamResult(kind = MediaKind.IMAGE, mediaUrl = url, mime = "image/*")
+            else -> throw TapcreatorException("上游未返回可下载图片", "UPSTREAM_EMPTY")
+        }
+    }
+
+    /** 商汤 /images/edits 的 size：档位(4K/2K/1.5K/1K)转像素、WxH 校准到 32 的倍数 */
+    private fun normalizeEditsSize(raw: String): String {
+        val lower = raw.trim().lowercase()
+        val preset = when (lower) {
+            "4k" -> "4096x4096"
+            "2k" -> "2048x2048"
+            "1.5k" -> "1536x1536"
+            "1k" -> "1024x1024"
+            else -> null
+        }
+        if (preset != null) return preset
+        val parts = lower.split('x')
+        if (parts.size == 2) {
+            val w = parts[0].trim().toIntOrNull() ?: return "2048x2048"
+            val h = parts[1].trim().toIntOrNull() ?: return "2048x2048"
+            fun align32(v: Int) = (v / 32) * 32
+            return "${align32(w).coerceAtLeast(32)}x${align32(h).coerceAtLeast(32)}"
+        }
+        return "2048x2048"
     }
 
     /** OpenAI 兼容 /images/generations 图生图；带参考图时尽力上送 image 参数（400/422 明确报错不静默） */
