@@ -52,6 +52,142 @@ class PRootSandbox @Inject constructor(
         private const val MAX_OUTPUT_BYTES = 1_048_576 // 1MB
         /** 等待沙箱 shell 就绪标记的最长时间（仅等 shell 启动，不等 apk 安装） */
         private const val READY_TIMEOUT_MS = 10_000L
+
+        /**
+         * 纯 tar 拆包（调用方完成 gzip 解压）：普通文件落盘，符号链接/硬链接收集后统一补建。
+         * 符号链接须延迟到文件解压完再建：tar 内条目顺序不定（Alpine 的 ./bin/sh -> /bin/busybox，
+         * busybox 往往排其后），立即建链会因目标未解压而失败，导致「rootfs 不完整：缺少 /bin/sh」。
+         * internal + 无 Android 依赖，供 JVM 单测用真实 minirootfs 资产回归验证。
+         */
+        internal fun extractTar(tarFile: File, root: File) {
+            val buf = ByteArray(512)
+            val pendingSymlinks = mutableListOf<Pair<File, String>>() // (链接文件, 原始 linkname)
+            val pendingHardlinks = mutableListOf<Pair<File, String>>()
+            tarFile.inputStream().use { input ->
+                while (true) {
+                    val read = readFully(input, buf, 512)
+                    if (read < 512) break
+                    // 解析 tar header
+                    val name = String(buf, 0, 100).trimEnd('\u0000', ' ').trim()
+                    if (name.isEmpty()) break // 空块 = 结束
+                    val sizeStr = String(buf, 124, 12).trimEnd('\u0000', ' ').trim()
+                    val size = if (sizeStr.isNotEmpty()) sizeStr.toLong(8) else 0L
+                    val typeFlag = buf[156].toInt().toChar()
+
+                    // 清理路径前缀 ./
+                    val cleanName = name.removePrefix("./").removePrefix("/")
+                    if (cleanName.isEmpty()) {
+                        // 跳过数据块
+                        skipFully(input, ((size + 511) / 512) * 512)
+                        continue
+                    }
+
+                    val outFile = File(root, cleanName)
+                    when (typeFlag) {
+                        '5' -> { // 目录
+                            outFile.mkdirs()
+                        }
+                        '0', '\u0000' -> { // 普通文件
+                            outFile.parentFile?.mkdirs()
+                            if (size > 0) {
+                                outFile.outputStream().use { output ->
+                                    var remaining = size
+                                    val copyBuf = ByteArray(8192)
+                                    while (remaining > 0) {
+                                        val toRead = minOf(copyBuf.size.toLong(), remaining).toInt()
+                                        val n = input.read(copyBuf, 0, toRead)
+                                        if (n < 0) break
+                                        output.write(copyBuf, 0, n)
+                                        remaining -= n
+                                    }
+                                }
+                                // 补齐到 512 对齐
+                                val padding = ((size + 511) / 512) * 512 - size
+                                skipFully(input, padding)
+                            }
+                        }
+                        '1' -> { // 硬链接：linkname 字段（offset 157, 100 字节）指向目标，稍后统一复制
+                            if (size > 0) skipFully(input, ((size + 511) / 512) * 512)
+                            val linkName = String(buf, 157, 100).trimEnd('\u0000', ' ').trim()
+                            if (linkName.isNotEmpty()) pendingHardlinks += outFile to linkName
+                        }
+                        '2' -> { // 符号链接：linkname = 链接目标，稍后统一补建
+                            if (size > 0) skipFully(input, ((size + 511) / 512) * 512)
+                            val linkName = String(buf, 157, 100).trimEnd('\u0000', ' ').trim()
+                            if (linkName.isNotEmpty()) pendingSymlinks += outFile to linkName
+                        }
+                        else -> { // 其他类型（FIFO 等），跳过数据
+                            if (size > 0) skipFully(input, ((size + 511) / 512) * 512)
+                        }
+                    }
+                }
+            }
+            // 统一补建链接：此时目标文件一般已解压完成
+            pendingHardlinks.forEach { (out, raw) -> copyLinkTarget(root, out, raw) }
+            pendingSymlinks.forEach { (out, raw) -> createLinkOrCopy(root, out, raw) }
+        }
+
+        /** 解析 linkname（可能为绝对 /bin/busybox 或相对 libz.so.1.3.1）到 rootfs 内的目标文件 */
+        private fun resolveLinkTarget(root: File, outFile: File, raw: String): File? {
+            val clean = raw.trim().removePrefix("./")
+            if (clean.isEmpty()) return null
+            return if (clean.startsWith("/")) {
+                File(root, clean.removePrefix("/"))
+            } else {
+                // 相对路径：相对链接所在目录解析（如 ./usr/lib/libz.so.1 -> libz.so.1.3.1）
+                File(outFile.parentFile ?: root, clean)
+            }
+        }
+
+        /** 建符号链接：优先真实 symlink；失败（Android SELinux 限制）则降级复制目标内容 */
+        private fun createLinkOrCopy(root: File, outFile: File, raw: String) {
+            val resolved = resolveLinkTarget(root, outFile, raw) ?: return
+            runCatching {
+                outFile.parentFile?.mkdirs()
+                if (outFile.exists().not()) java.nio.file.Files.createSymbolicLink(outFile.toPath(), resolved.toPath())
+            }.getOrElse {
+                // 降级：复制目标内容（保证 /bin/sh、/usr/bin/* 等真实存在）
+                runCatching {
+                    if (outFile.exists().not() && resolved.isFile) resolved.copyTo(outFile)
+                }
+            }
+        }
+
+        /** 硬链接：复制目标文件内容（不动原文件） */
+        private fun copyLinkTarget(root: File, outFile: File, raw: String) {
+            val resolved = resolveLinkTarget(root, outFile, raw) ?: return
+            runCatching {
+                outFile.parentFile?.mkdirs()
+                if (outFile.exists().not() && resolved.isFile) resolved.copyTo(outFile)
+            }
+        }
+
+        private fun readFully(input: java.io.InputStream, buf: ByteArray, len: Int): Int {
+            var total = 0
+            while (total < len) {
+                val n = input.read(buf, total, len - total)
+                if (n < 0) return total
+                total += n
+            }
+            return total
+        }
+
+        private fun skipFully(input: java.io.InputStream, n: Long) {
+            var remaining = n
+            while (remaining > 0) {
+                val skipped = input.skip(remaining)
+                if (skipped <= 0) {
+                    // skip 返回 0，用 read 消费
+                    val buf = ByteArray(8192)
+                    val toRead = minOf(buf.size.toLong(), remaining).toInt()
+                    val read = input.read(buf, 0, toRead)
+                    if (read < 0) break
+                    remaining -= read
+                } else {
+                    remaining -= skipped
+                }
+            }
+        }
     }
 
     private val ready = AtomicBoolean(false)
@@ -176,120 +312,8 @@ class PRootSandbox @Inject constructor(
             tmpTar.outputStream().use { output -> gzip.copyTo(output) }
         }
 
-        val buf = ByteArray(512)
-        tmpTar.inputStream().use { input ->
-            while (true) {
-                val read = readFully(input, buf, 512)
-                if (read < 512) break
-                // 解析 tar header
-                val name = String(buf, 0, 100).trimEnd('\u0000', ' ').trim()
-                if (name.isEmpty()) break // 空块 = 结束
-                val sizeStr = String(buf, 124, 12).trimEnd('\u0000', ' ').trim()
-                val size = if (sizeStr.isNotEmpty()) sizeStr.toLong(8) else 0L
-                val typeFlag = buf[156].toInt().toChar()
-
-                // 清理路径前缀 ./
-                val cleanName = name.removePrefix("./").removePrefix("/")
-                if (cleanName.isEmpty()) {
-                    // 跳过数据块
-                    skipFully(input, ((size + 511) / 512) * 512)
-                    continue
-                }
-
-                val outFile = File(rootfsDir, cleanName)
-                when (typeFlag) {
-                    '5' -> { // 目录
-                        outFile.mkdirs()
-                    }
-                    '0', '\u0000' -> { // 普通文件
-                        outFile.parentFile?.mkdirs()
-                        if (size > 0) {
-                            outFile.outputStream().use { output ->
-                                var remaining = size
-                                val copyBuf = ByteArray(8192)
-                                while (remaining > 0) {
-                                    val toRead = minOf(copyBuf.size.toLong(), remaining).toInt()
-                                    val n = input.read(copyBuf, 0, toRead)
-                                    if (n < 0) break
-                                    output.write(copyBuf, 0, n)
-                                    remaining -= n
-                                }
-                            }
-                            // 补齐到 512 对齐
-                            val padding = ((size + 511) / 512) * 512 - size
-                            skipFully(input, padding)
-                        }
-                    }
-                    '1' -> { // 硬链接：目标在 linkname 字段（offset 157, 100 字节），复制目标文件内容
-                        if (size > 0) skipFully(input, ((size + 511) / 512) * 512)
-                        val linkName = String(buf, 157, 100).trimEnd('\u0000', ' ').trim()
-                            .removePrefix("./").removePrefix("/")
-                        if (linkName.isNotEmpty()) {
-                            val target = File(rootfsDir, linkName)
-                            runCatching {
-                                outFile.parentFile?.mkdirs()
-                                if (target.exists() && outFile.exists().not()) {
-                                    target.copyTo(outFile)
-                                }
-                            }
-                        }
-                    }
-                    '2' -> { // 符号链接：linkname = 链接目标
-                        if (size > 0) skipFully(input, ((size + 511) / 512) * 512)
-                        val linkName = String(buf, 157, 100).trimEnd('\u0000', ' ').trim()
-                        if (linkName.isNotEmpty()) {
-                            runCatching {
-                                outFile.parentFile?.mkdirs()
-                                if (outFile.exists().not()) {
-                                    // 用 exec 创建符号链接（filesDir 内允许；java.nio 在 Android 上受限）
-                                    try {
-                                        java.nio.file.Files.createSymbolicLink(
-                                            outFile.toPath(),
-                                            java.nio.file.Paths.get(linkName),
-                                        )
-                                    } catch (e: Exception) {
-                                        // 降级：复制目标（若目标存在）
-                                        val resolved = File(rootfsDir, linkName.removePrefix("./").removePrefix("/"))
-                                        if (resolved.exists()) resolved.copyTo(outFile)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    else -> { // 其他类型（FIFO 等），跳过数据
-                        if (size > 0) skipFully(input, ((size + 511) / 512) * 512)
-                    }
-                }
-            }
-        }
+        extractTar(tmpTar, rootfsDir)
         tmpTar.delete()
-    }
-
-    private fun readFully(input: java.io.InputStream, buf: ByteArray, len: Int): Int {
-        var total = 0
-        while (total < len) {
-            val n = input.read(buf, total, len - total)
-            if (n < 0) return total
-            total += n
-        }
-        return total
-    }
-
-    private fun skipFully(input: java.io.InputStream, n: Long) {
-        var remaining = n
-        while (remaining > 0) {
-            val skipped = input.skip(remaining)
-            if (skipped <= 0) {
-                // skip 返回 0，用 read 消费
-                val buf = ByteArray(8192)
-                val toRead = minOf(buf.size.toLong(), remaining).toInt()
-                val read = input.read(buf, 0, toRead)
-                if (read < 0) break
-                remaining -= read
-            } else {
-                remaining -= skipped
-            }
-        }
     }
 
     /**
