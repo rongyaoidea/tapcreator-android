@@ -38,6 +38,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.IOException
 
 /**
  * 上游网关：在设备内直连 AI 上游。本版落地 OpenAI 兼容协议（文本/图像）。
@@ -363,7 +364,7 @@ class ProviderGateway @Inject constructor(
             if (secrets.apiKey.isNotBlank()) builder.header("Authorization", "Bearer ${secrets.apiKey}")
             try {
                 val output = withContext(Dispatchers.IO) {
-                    client.newCall(builder.build()).execute().use { resp ->
+                    callWithRetry(builder).use { resp ->
                         if (!resp.isSuccessful) {
                             val text = resp.body?.string().orEmpty()
                             lastHttp = resp.code to text
@@ -656,6 +657,38 @@ class ProviderGateway @Inject constructor(
         return UpstreamResult(kind = MediaKind.AUDIO, mediaBytes = bytes, mime = "audio/mpeg")
     }
 
+    /**
+     * 网络请求执行 + 自动重试：上传瞬时抖动时重试 1 次（共 2 次尝试），
+     * 最终 IOException 统一映射为可读提示，避免裸抛 "software caused connection abort" 之类底层消息。
+     * body 为内存中的 RequestBody（可重复写），重试安全。
+     */
+    private fun callWithRetry(builder: Request.Builder): Response {
+        var last: IOException? = null
+        repeat(2) { i ->
+            try {
+                return client.newCall(builder.build()).execute()
+            } catch (e: IOException) {
+                last = e
+                if (i == 0) Thread.sleep(1_000L)
+            }
+        }
+        throw friendlyNetworkError(checkNotNull(last))
+    }
+
+    /** 把底层网络异常映射为可读的 TapcreatorException（区分超时 / 断连 / 无法连接） */
+    private fun friendlyNetworkError(e: IOException): TapcreatorException {
+        val msg = e.message.orEmpty().lowercase()
+        val friendly = when {
+            e is java.net.SocketTimeoutException -> "网络超时：${e.message ?: "请求超时"}"
+            e is java.net.ConnectException -> "无法连接服务器，请检查网络与接口地址"
+            msg.contains("abort") || msg.contains("reset") || msg.contains("broken pipe") ||
+                msg.contains("connection") -> "网络连接被中断，请检查网络后重试"
+            msg.contains("timeout") -> "网络请求超时，请稍后重试"
+            else -> "网络请求失败：${e.message}"
+        }
+        return TapcreatorException(friendly, "NETWORK")
+    }
+
     private fun execute(channel: Channel, secrets: ChannelSecrets, endpoint: String, body: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject {
         val base = normalizeBase(channel.baseUrl)
         val payload = json.encodeToJsonElement(body).toString().toRequestBody("application/json".toMediaType())
@@ -664,7 +697,7 @@ class ProviderGateway @Inject constructor(
             val builder = Request.Builder().url(url).post(payload)
             if (secrets.apiKey.isNotBlank()) builder.header("Authorization", "Bearer ${secrets.apiKey}")
             try {
-                val parsed = client.newCall(builder.build()).execute().use { resp ->
+                val parsed = callWithRetry(builder).use { resp ->
                     val text = resp.body?.string().orEmpty()
                     if (!resp.isSuccessful) {
                         lastHttp = resp.code to text
@@ -691,7 +724,7 @@ class ProviderGateway @Inject constructor(
         val builder = Request.Builder().url(base + endpoint).get()
         if (secrets.apiKey.isNotBlank()) builder.header("Authorization", "Bearer ${secrets.apiKey}")
         try {
-            client.newCall(builder.build()).execute().use { resp ->
+            callWithRetry(builder).use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) throw TapcreatorException(upstreamError(resp, text, base + endpoint), "UPSTREAM_HTTP")
                 if (text.isBlank()) throw TapcreatorException("上游返回空响应", "UPSTREAM_EMPTY")
@@ -710,7 +743,7 @@ class ProviderGateway @Inject constructor(
         for (url in endpointUrls(base, endpoint)) {
             val builder = Request.Builder().url(url).post(payload)
             if (secrets.apiKey.isNotBlank()) builder.header("Authorization", "Bearer ${secrets.apiKey}")
-            val result = client.newCall(builder.build()).execute().use { resp ->
+            val result = callWithRetry(builder).use { resp ->
                 if (!resp.isSuccessful) {
                     val text = resp.body?.string().orEmpty()
                     lastHttp = resp.code to text
@@ -740,7 +773,7 @@ class ProviderGateway @Inject constructor(
                 val builder = Request.Builder().url(url).get()
                 if (secrets.apiKey.isNotBlank()) builder.header("Authorization", "Bearer ${secrets.apiKey}")
                 try {
-                    client.newCall(builder.build()).execute().use { resp ->
+                    callWithRetry(builder).use { resp ->
                         val text = resp.body?.string().orEmpty()
                         if (resp.isSuccessful) {
                             val count = runCatching {
@@ -772,7 +805,7 @@ class ProviderGateway @Inject constructor(
                 val builder = Request.Builder().url(url).get()
                 builder.header("Authorization", "Bearer $apiKey")
                 try {
-                    client.newCall(builder.build()).execute().use { resp ->
+                    callWithRetry(builder).use { resp ->
                         val text = resp.body?.string().orEmpty()
                         if (resp.isSuccessful) {
                             val ids = runCatching {

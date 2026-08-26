@@ -78,6 +78,10 @@ fun LibraryScreen(
     pickerMode: Boolean = false,
     onPickAsset: ((AssetEntity) -> Unit)? = null,
     isAssetPicked: ((AssetEntity) -> Boolean)? = null,
+    // picker 模式扩展：文件夹级一键选取
+    pickerKindFilter: ((AssetEntity) -> Boolean)? = null,
+    onToggleFolderPick: ((AssetFolderEntity) -> Unit)? = null,
+    isFolderPicked: ((AssetFolderEntity) -> Boolean)? = null,
 ) {
     val assets by vm.assets.collectAsState()
     val folders by vm.folders.collectAsState()
@@ -149,6 +153,9 @@ fun LibraryScreen(
                 selected = selected,
                 onSelect = { selected = it },
                 onDeleteRequest = { deletingFolder = it },
+                pickerMode = pickerMode,
+                onToggleFolderPick = onToggleFolderPick,
+                isFolderPicked = isFolderPicked,
             )
 
             if (shownAssets.isEmpty()) {
@@ -259,7 +266,9 @@ fun LibraryScreen(
     }
 }
 
-/** 文件夹切换条：全部 / 未归档 / 各文件夹（长按角色·产品可删除） */
+/** 文件夹切换条：全部 / 未归档 / 各文件夹。
+ *  普通模式：单击切换浏览，长按角色·产品可删除。
+ *  picker 模式：单击文件夹=全选/取消该夹内可参考素材（全选时显示 ✓），长按=进该夹浏览单个精调。 */
 @Composable
 private fun FolderChips(
     folders: List<AssetFolderEntity>,
@@ -268,6 +277,9 @@ private fun FolderChips(
     selected: String?,
     onSelect: (String?) -> Unit,
     onDeleteRequest: (AssetFolderEntity) -> Unit,
+    pickerMode: Boolean = false,
+    onToggleFolderPick: ((AssetFolderEntity) -> Unit)? = null,
+    isFolderPicked: ((AssetFolderEntity) -> Boolean)? = null,
 ) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = Dimens.PagePadding, vertical = 2.dp),
@@ -283,23 +295,46 @@ private fun FolderChips(
             ) { onSelect(SENTINEL_UNASSIGNED) }
         }
         items(folders, key = { it.id }) { folder ->
-            Chip(
-                label = "${folderBadge(folder.kind)}${folder.name} ${counts[folder.id] ?: 0}",
-                selected = selected == folder.id,
-                onLongClick = { onDeleteRequest(folder) },
-            ) { onSelect(folder.id) }
+            val label = "${folderBadge(folder.kind)}${folder.name} ${counts[folder.id] ?: 0}"
+            val browsing = selected == folder.id
+            if (pickerMode && onToggleFolderPick != null) {
+                val picked = isFolderPicked?.invoke(folder) == true
+                Chip(
+                    label = label,
+                    selected = browsing || picked,
+                    leadingIcon = if (picked) {
+                        ({ Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(14.dp)) })
+                    } else null,
+                    onLongClick = { onSelect(folder.id) },
+                    onClick = { onToggleFolderPick(folder) },
+                )
+            } else {
+                Chip(
+                    label = label,
+                    selected = browsing,
+                    onLongClick = { onDeleteRequest(folder) },
+                ) { onSelect(folder.id) }
+            }
         }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Chip(label: String, selected: Boolean, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+private fun Chip(
+    label: String,
+    selected: Boolean,
+    onLongClick: (() -> Unit)? = null,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    onClick: () -> Unit,
+) {
     FilterChip(
         selected = selected,
         onClick = onClick,
-        modifier = Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        // combinedClickable 仅提供长按；单击交给 FilterChip 自身，避免双 onClick 在 toggle（picker 全选）场景双重触发
+        modifier = Modifier.combinedClickable(onClick = {}, onLongClick = onLongClick),
         label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+        leadingIcon = leadingIcon,
         colors = FilterChipDefaults.filterChipColors(),
     )
 }

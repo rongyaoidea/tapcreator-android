@@ -517,6 +517,22 @@ class ChatViewModel @Inject constructor(
         markStateChanged()
     }
 
+    /** 分辨率双输入框：只接受数字，宽/高任一变化时实时合成 "WxH"；两框皆空则置 null（用模型默认） */
+    fun onResolutionPartChange(isWidth: Boolean, raw: String) {
+        val digits = raw.filter { it.isDigit() }.take(4)
+        val parts = resolution.orEmpty().split("x", "X", "×")
+        val curW = parts.getOrNull(0)?.trim()?.filter { it.isDigit() } ?: ""
+        val curH = parts.getOrNull(1)?.trim()?.filter { it.isDigit() } ?: ""
+        val w = if (isWidth) digits else curW
+        val h = if (isWidth) curH else digits
+        resolution = when {
+            w.isEmpty() && h.isEmpty() -> null
+            h.isEmpty() -> w
+            else -> "${w}x${h}"
+        }
+        markStateChanged()
+    }
+
     fun toggleReference(card: CardEntity) {
         val has = selectedReferenceCards.any { it.id == card.id }
         selectedReferenceCards = if (has) {
@@ -553,6 +569,41 @@ class ChatViewModel @Inject constructor(
             selectedReferenceAssets.filterNot { it.id == asset.id }
         } else {
             selectedReferenceAssets + asset
+        }
+        markStateChanged()
+    }
+
+    // ---------- 素材库文件夹级一键选取（picker 模式，点击文件夹 chip） ----------
+    /** 该素材能否作为「当前生成类型」的参考（与 send() 的过滤规则一致） */
+    fun isUsableReferenceAsset(asset: AssetEntity): Boolean =
+        canServeAsReference(asset.kind, selectedKind)
+
+    /** 返回文件夹内可用于当前生成类型的素材（folderId 需为具体文件夹 id） */
+    fun folderUsableAssets(folderId: String): List<AssetEntity> =
+        libraryAssets.value.filter { it.folderId == folderId && canServeAsReference(it.kind, selectedKind) }
+
+    /** 文件夹内可用素材是否已全部选中（chip 显示 ✓ 全选态） */
+    fun isFolderAllPicked(folderId: String): Boolean {
+        val usable = folderUsableAssets(folderId)
+        if (usable.isEmpty()) return false
+        val picked = usable.all { a ->
+            a.mediaPath != null && selectedReferenceAssets.any { it.mediaPath == a.mediaPath }
+        }
+        return picked
+    }
+
+    /** 点击文件夹 chip：未全选→补全该夹可用素材；已全选→一键全部取消 */
+    fun toggleFolderAssets(folderId: String) {
+        val usable = folderUsableAssets(folderId)
+        if (usable.isEmpty()) return
+        val pickedPaths = selectedReferenceAssets.mapNotNull { it.mediaPath }.toSet()
+        val missing = usable.filter { it.mediaPath != null && it.mediaPath !in pickedPaths }
+        selectedReferenceAssets = if (missing.isEmpty()) {
+            // 已全选：移除该夹所有素材
+            val removePaths = usable.mapNotNull { it.mediaPath }.toSet()
+            selectedReferenceAssets.filterNot { it.mediaPath in removePaths }
+        } else {
+            (selectedReferenceAssets + missing).distinctBy { it.mediaPath }
         }
         markStateChanged()
     }
@@ -642,6 +693,48 @@ class ChatViewModel @Inject constructor(
         if (dropped > 0) {
             toast("已忽略 $dropped 个不适用于${if (target == MediaKind.IMAGE) "图像" else "视频"}生成的参考")
         }
+        // 参考图数量上限：与 RunService 上送截断一致（保留前 8 张，卡片优先）。超限时从尾部删图，保留前面的参考。
+        val over = (usableCards.count { it.kind == MediaKind.IMAGE } + usableAssets.count { it.kind == MediaKind.IMAGE }) - MAX_REF_ASSETS
+        val (limitedCards, limitedAssets) = if (over > 0) {
+            var dropRemain = over
+            // 先删素材尾部图片（RunService 消费顺序：卡片优先、素材在后），仍超再删卡片尾部
+            val assets = usableAssets.toMutableList()
+            while (dropRemain > 0 && assets.isNotEmpty()) {
+                val idx = assets.indexOfLast { it.kind == MediaKind.IMAGE }
+                if (idx < 0) break
+                assets.removeAt(idx)
+                dropRemain--
+            }
+            val cards = usableCards.toMutableList()
+            while (dropRemain > 0 && cards.isNotEmpty()) {
+                val idx = cards.indexOfLast { it.kind == MediaKind.IMAGE }
+                if (idx < 0) break
+                cards.removeAt(idx)
+                dropRemain--
+            }
+            toast("参考图超过 $MAX_REF_ASSETS 张上限，仅保留前 $MAX_REF_ASSETS 张")
+            cards.toList() to assets.toList()
+        } else {
+            usableCards to usableAssets
+        }
+                // 手动分辨率有效性校验：图片强制 WxH 数字（64..8192 正整数）；视频放行模型声明档位（768P/2K/4K），
+        // 两者皆非则回落模型默认并提示。
+        val resValid = run {
+            val r = resolution?.trim()
+            if (r.isNullOrBlank()) {
+                true
+            } else {
+                val parts = r.split("x", "X", "×").mapNotNull { it.trim().toIntOrNull() }
+                if (parts.size == 2 && parts.all { it in 64..8192 }) {
+                    true
+                } else if (selectedKind == MediaKind.VIDEO && r in selectedModelResolutions) {
+                    true
+                } else {
+                    toast("分辨率「$r」无效，已使用模型默认")
+                    false
+                }
+            }
+        }
         lastRequestBase = RunRequest(
             conversationId = conversationId,
             prompt = prompt,
@@ -650,10 +743,10 @@ class ChatViewModel @Inject constructor(
             count = count,
             ratio = ratio.ifEmpty { null },
             quality = quality.ifEmpty { null },
-            resolution = resolution?.takeIf { it.isNotBlank() },
+            resolution = if (resValid) resolution?.takeIf { it.isNotBlank() } else null,
             seconds = if (selectedKind == MediaKind.VIDEO) videoSeconds else null,
-            referencedAssetIds = usableCards.map { it.id },
-            referencedAssetPaths = usableAssets.mapNotNull { it.mediaPath },
+            referencedAssetIds = limitedCards.map { it.id },
+            referencedAssetPaths = limitedAssets.mapNotNull { it.mediaPath },
         )
         val req = lastRequestBase!!
         // 提交瞬间：确保有一张「生成中」占位卡在画布上显示进度，而非静默消失。
@@ -761,7 +854,25 @@ class ChatViewModel @Inject constructor(
         agentInput = ""
         // 先行快照，避免协程尚未读取时就被下方清空
         val refCards = selectedReferenceCards.map { it.id }
-        val refAssets = selectedReferenceAssets.mapNotNull { it.mediaPath }
+        // 参考图数量上限：与 RunService 上送截断一致（保留前 8 张）。超限时从尾部删图片素材，保留前面的参考。
+        val overImgs = selectedReferenceCards.count { it.kind == MediaKind.IMAGE } +
+            selectedReferenceAssets.count { it.kind == MediaKind.IMAGE } - MAX_REF_ASSETS
+        var dropImgs = overImgs.coerceAtLeast(0)
+        val refAssets = if (dropImgs > 0) {
+            val paths = selectedReferenceAssets.mapNotNull { a -> a.mediaPath }
+            val kindByPath = selectedReferenceAssets.associateBy { it.mediaPath }
+            val out = paths.toMutableList()
+            while (dropImgs > 0 && out.isNotEmpty()) {
+                val idx = out.indexOfLast { kindByPath[it]?.kind == MediaKind.IMAGE }
+                if (idx < 0) break
+                out.removeAt(idx)
+                dropImgs--
+            }
+            out
+        } else {
+            selectedReferenceAssets.mapNotNull { it.mediaPath }
+        }
+        if (overImgs > 0) toast("参考图超过 $MAX_REF_ASSETS 张上限，仅保留前 $MAX_REF_ASSETS 张")
         selectedReferenceCards = emptyList()
         selectedReferenceAssets = emptyList()
         markStateChanged()
@@ -1013,5 +1124,10 @@ class ChatViewModel @Inject constructor(
             resolver.delete(uri, null, null)
             false
         }
+    }
+
+    companion object {
+        /** 单次生成可携带的参考图数量上限（与 RunService 上送截断一致） */
+        const val MAX_REF_ASSETS = 8
     }
 }

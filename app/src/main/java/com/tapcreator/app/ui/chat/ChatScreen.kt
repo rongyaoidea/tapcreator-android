@@ -80,12 +80,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.text.font.FontFamily
@@ -443,6 +445,9 @@ fun ChatScreen(
                         isAssetPicked = { asset ->
                             viewModel.selectedReferenceAssets.any { it.mediaPath != null && it.mediaPath == asset.mediaPath }
                         },
+                        pickerKindFilter = { asset -> viewModel.isUsableReferenceAsset(asset) },
+                        onToggleFolderPick = { folder -> viewModel.toggleFolderAssets(folder.id) },
+                        isFolderPicked = { folder -> viewModel.isFolderAllPicked(folder.id) },
                     )
                 }
             }
@@ -1142,7 +1147,7 @@ private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromC
                 }
             }
         }
-        // 分辨率：始终提供手动输入框（自定义分辨率）；若模型声明了已知档位，另排一批快捷 chips 点选填充
+        // 分辨率：宽×高 双数字输入框（只填数字，中间 × 内置）；若模型声明了已知档位，另排一批快捷 chips 点选填充
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1154,20 +1159,40 @@ private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromC
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("分辨率", style = MaterialTheme.typography.labelSmall)
+                val resParts = vm.resolution.orEmpty().split("x", "X", "×")
                 OutlinedTextField(
-                    value = vm.resolution ?: "",
-                    onValueChange = { vm.onResolutionChange(it) },
+                    value = resParts.getOrNull(0)?.trim() ?: "",
+                    onValueChange = { vm.onResolutionPartChange(true, it) },
                     placeholder = {
                         Text(
-                            if (vm.selectedKind == com.tapcreator.app.data.model.MediaKind.VIDEO) "如 768P / 2K" else "如 1024x1024",
+                            "宽",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                         )
                     },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     textStyle = MaterialTheme.typography.labelMedium,
                     modifier = Modifier
-                        .width(150.dp)
+                        .width(64.dp)
+                        .heightIn(max = 44.dp),
+                )
+                Text("×", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(
+                    value = resParts.getOrNull(1)?.trim() ?: "",
+                    onValueChange = { vm.onResolutionPartChange(false, it) },
+                    placeholder = {
+                        Text(
+                            "高",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .width(64.dp)
                         .heightIn(max = 44.dp),
                 )
             }

@@ -196,6 +196,8 @@ fun CanvasWorkspace(
             val drag = drags[card.id] ?: Offset.Zero
             val selected = card.id in selectedIds
             val isDraft = card.runId == "draft"
+            // 生成失败后空白卡 runId 仍是 "draft"：允许长按进入多选删除，避免「失败卡无法手动删除」
+            val failedBlank = isDraft && card.status == RunStatus.FAILED
             CanvasNode(
                 card = card,
                 selected = selected,
@@ -219,8 +221,8 @@ fun CanvasWorkspace(
                     }
                 },
                 onLongClick = {
-                    if (!isDraft) {
-                        // 长按进入多选删除状态，并把该卡纳入选中
+                    if (!isDraft || failedBlank) {
+                        // 长按进入多选删除状态，并把该卡纳入选中（失败空白卡也允许删除）
                         multiSelect = true
                         onToggleNode(card.id, true)
                     }

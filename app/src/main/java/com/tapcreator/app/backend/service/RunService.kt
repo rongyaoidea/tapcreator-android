@@ -30,6 +30,8 @@ import com.tapcreator.app.backend.video.LastFrameExtractor
 import com.tapcreator.app.backend.video.FfmpegConcatenator
 import com.tapcreator.app.backend.video.Mp4Concatenator
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +40,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -427,10 +430,20 @@ class RunService @Inject constructor(
                 .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
                 .readTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
-            client.newCall(okhttp3.Request.Builder().url(result.mediaUrl).build()).execute().use { resp ->
-                if (!resp.isSuccessful) throw TapcreatorException("视频段下载失败 HTTP ${resp.code}", "UPSTREAM_HTTP")
-                resp.body?.byteStream()?.use { input -> outputStream().use { output -> input.copyTo(output) } }
+            // 下载瞬时断连重试 1 次，最终映射为可读提示
+            repeat(2) { i ->
+                try {
+                    client.newCall(okhttp3.Request.Builder().url(result.mediaUrl).build()).execute().use { resp ->
+                        if (!resp.isSuccessful) throw TapcreatorException("视频段下载失败 HTTP ${resp.code}", "UPSTREAM_HTTP")
+                        resp.body?.byteStream()?.use { input -> outputStream().use { output -> input.copyTo(output) } }
+                    }
+                    return
+                } catch (e: java.io.IOException) {
+                    if (i == 0) Thread.sleep(1_000L)
+                }
             }
+            delete() // 清理可能已部分写入的文件，避免临时文件泄漏
+            throw TapcreatorException("网络连接被中断，请检查网络后重试", "NETWORK")
         } else {
             throw TapcreatorException("上游未返回视频内容", "UPSTREAM_EMPTY")
         }
@@ -511,6 +524,15 @@ class RunService @Inject constructor(
         val videoFiles: List<com.tapcreator.app.backend.providers.IdentityFile>,
     )
 
+    /** 单次生成的参考图片数量上限：多张原图 base64 会把请求体撑到数十 MB，触发网关断连 */
+    private companion object {
+        const val MAX_REF_IMAGES = 8
+        const val MAX_REF_VIDEOS = 2
+        /** 参考图缩放最长边：足以支撑多模态识图/身份锚点，且把单张体积压到 ~200KB */
+        const val REF_IMAGE_MAX_SIDE = 1536
+        const val REF_IMAGE_JPEG_QUALITY = 85
+    }
+
     /**
      * 把被参考的媒体路径归一化为本会话的工作区卡片（已存在则复用其 id），
      * 后续 persistOneCard/persistVideoCard 会为这些卡建立到新产出卡的 reference 边，
@@ -575,19 +597,34 @@ class RunService @Inject constructor(
 
         fun addImage(path: String?) {
             val f = path?.let(::File)?.takeIf { it.exists() } ?: return
+            // 数量上限：多张原图 base64 内联会把请求体撑到数十 MB，触发网关断连；超限直接截断
+            if (images.size >= MAX_REF_IMAGES) return
             runCatching {
-                val bytes = f.readBytes()
-                val b64 = java.util.Base64.getEncoder().encodeToString(bytes)
-                images += "data:image/webp;base64,$b64"
-                imageFiles += com.tapcreator.app.backend.providers.IdentityFile(
-                    name = f.name,
-                    mime = "image/webp",
-                    base64 = b64,
-                )
+                val compressed = compressImageToBase64(f.absolutePath)
+                if (compressed != null) {
+                    images += "data:image/jpeg;base64,$compressed"
+                    imageFiles += com.tapcreator.app.backend.providers.IdentityFile(
+                        name = f.name,
+                        mime = "image/jpeg",
+                        base64 = compressed,
+                    )
+                } else {
+                    // 压缩失败降级：仍送原图，保证参考不被静默丢弃
+                    val bytes = f.readBytes()
+                    val b64 = java.util.Base64.getEncoder().encodeToString(bytes)
+                    images += "data:image/webp;base64,$b64"
+                    imageFiles += com.tapcreator.app.backend.providers.IdentityFile(
+                        name = f.name,
+                        mime = "image/webp",
+                        base64 = b64,
+                    )
+                }
             }
         }
         fun addVideo(path: String?) {
             val f = path?.let(::File)?.takeIf { it.exists() } ?: return
+            // 视频 base64 体积巨大，身份参考保留前 2 段即可，避免请求体爆炸
+            if (videoFiles.size >= MAX_REF_VIDEOS) return
             runCatching {
                 val bytes = f.readBytes()
                 videoFiles += com.tapcreator.app.backend.providers.IdentityFile(
@@ -627,6 +664,45 @@ class RunService @Inject constructor(
             }
         }
         return ResolvedRefs(texts, images, audio, imageFiles, videoFiles)
+    }
+
+    /**
+     * 参考图发送前压缩：按最长边采样缩放 + JPEG 编码，把相册原图（数 MB）压到 ~200KB，
+     * 避免多张原图 base64 内联把请求体撑到数十 MB 导致网关断连（"software caused connection abort"）。
+     * 返回失败时调用方降级送原图。两次 inSampleSize 解码避免大图一次性解到内存 OOM。
+     */
+    private fun compressImageToBase64(path: String): String? {
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            var sample = 1
+            while (bounds.outWidth / sample > REF_IMAGE_MAX_SIDE * 2 || bounds.outHeight / sample > REF_IMAGE_MAX_SIDE * 2) {
+                sample *= 2
+            }
+            val decoded = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+                ?: return null
+            val w = decoded.width
+            val h = decoded.height
+            val scale = REF_IMAGE_MAX_SIDE.toFloat() / maxOf(w, h).toFloat()
+            val finalBmp = if (scale < 1f) {
+                Bitmap.createScaledBitmap(
+                    decoded,
+                    (w * scale).toInt().coerceAtLeast(1),
+                    (h * scale).toInt().coerceAtLeast(1),
+                    true,
+                )
+            } else {
+                decoded
+            }
+            if (finalBmp !== decoded) decoded.recycle()
+            val bos = ByteArrayOutputStream()
+            finalBmp.compress(Bitmap.CompressFormat.JPEG, REF_IMAGE_JPEG_QUALITY, bos)
+            finalBmp.recycle()
+            java.util.Base64.getEncoder().encodeToString(bos.toByteArray())
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     /**
