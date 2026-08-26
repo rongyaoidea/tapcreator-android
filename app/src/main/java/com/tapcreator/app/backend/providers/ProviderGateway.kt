@@ -115,7 +115,7 @@ class ProviderGateway @Inject constructor(
                 }
             )
             firstIdentityRefs?.images?.forEach { f ->
-                add(identityFilePart(f, "image_file"))
+                add(identityFilePart(f, "image_url"))
             }
             if (referenceVideoUrl != null) {
                 add(
@@ -127,7 +127,7 @@ class ProviderGateway @Inject constructor(
                 )
             }
             firstIdentityRefs?.videos?.forEach { f ->
-                add(identityFilePart(f, "video_file"))
+                add(identityFilePart(f, "video_url"))
             }
             if (referenceAudioUrl != null) {
                 add(
@@ -187,15 +187,21 @@ class ProviderGateway @Inject constructor(
     private fun h3Ratio(ratio: String?): String =
         ratio?.takeIf { it in setOf("21:9", "16:9", "4:3", "1:1", "3:4", "9:16") } ?: "16:9"
 
-    /** 把本地参考文件（base64 data URI）构造成 H3 多模态 content 片段（图片/视频用同名 structure） */
-    private fun identityFilePart(f: IdentityFile, type: String): kotlinx.serialization.json.JsonObject =
-        buildJsonObject {
+    /** 把本地参考文件（base64 data URI）构造成 MiniMax H3 多模态 content 片段。
+     *  MiniMax 规范的引用 part：type 只用 text/image_url/video_url/audio_url（不识别 image_file/video_file，
+     *  否则上游报「2013 content.type 不支持」），url 嵌套在同名对象内，role=reference_image/reference_video。 */
+    private fun identityFilePart(f: IdentityFile, type: String): kotlinx.serialization.json.JsonObject {
+        val isVideo = type == "video_url"
+        return buildJsonObject {
             put("type", type)
-            put("file_name", f.name)
-            put("url", f.dataUri)
-            put("file_type", f.mime)
-            put("role", if (type == "video_file") "reference_video" else "reference_image")
+            if (isVideo) {
+                put("video_url", buildJsonObject { put("url", f.dataUri); put("file_type", f.mime) })
+            } else {
+                put("image_url", buildJsonObject { put("url", f.dataUri); put("file_type", f.mime) })
+            }
+            put("role", if (isVideo) "reference_video" else "reference_image")
         }
+    }
 
     private fun openAiCreate(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         return when (prefs.kind) {
