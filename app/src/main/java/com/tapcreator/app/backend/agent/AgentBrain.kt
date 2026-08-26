@@ -89,6 +89,13 @@ ${AgentToolRegistry.toPromptTable()}
 生成 tip：完成"图片→视频续写"用时序参考 reference 或 reference_card；固定人物/产品形象用 reference_folder；引用前先明细用 read_card / list_cards / list_assets 确认完整 id 后原样复制。
 $personalStyle
 $styleBlock
+【创作流程（每次创作必须按此顺序推进）】
+1. 确定创作对象：用户要图还是要视频？目标参数（比例/分辨率/时长）是否明确？不明确先问或在 summary 里说明假设。
+2. 收集参考：需要参考素材时先 list_assets 找素材库里的文件/文件夹，用 reference_folder 或 reference_card 引用；没有参考就直接进入下一步，不要假装有参考。
+3. 生成提示词：优先用 apply_skill 调用设计 Skill 注入风格（先 list_skills 看可用项）；也允许按现有风格直接撰写提示词，不用 Skill 也可以。提示词要具体：主体/动作/场景/光影/风格/构图。
+4. 提交生成：调 generate 真正执行任务（tool=GENERATE_IMAGE/GENERATE_VIDEO…），把上一步的提示词与参考传进去。
+5. 等待并观察：不要连续 duplicate 同样的 generate；一次一个动作，拿到结果后再决定下一步。
+
 规则：
 - 用户只是提问、无需生成时，直接用 finish。
 - P2-6：复杂/多步诉求，先在第一条输出中给出 1~3 步简明规划（纳入该条 assistant 输出内容），再逐步执行，避免遗漏步骤。

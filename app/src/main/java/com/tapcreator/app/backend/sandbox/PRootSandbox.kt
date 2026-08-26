@@ -76,16 +76,29 @@ class PRootSandbox @Inject constructor(
 
             // 2. 解压 Alpine rootfs（首次启动或 rootfs 不完整时）
             val sentinel = File(rootfsDir, ".tapcreator_ready")
-            if (!sentinel.exists()) {
+            if (!sentinel.exists() || !File(rootfsDir, "bin/sh").exists()) {
+                // rootfs 缺失或校验文件（bin/sh）不存在 → 重新解压，保证完整
+                android.util.Log.w(TAG, "ensureReady: 重新解压 rootfs（sentinel=${sentinel.exists()}, bin/sh=${File(rootfsDir, "bin/sh").exists()}）")
+                rootfsDir.deleteRecursively()
                 rootfsDir.mkdirs()
                 // 用 Java 手动解压 tar.gz（避免引入 Apache Commons Compress 依赖）
                 extractTarGz()
+                // 校验 rootfs 完整性：/bin/sh 必须在（Alpine 库链接已处理）
+                if (!File(rootfsDir, "bin/sh").exists()) {
+                    throw TapcreatorException("rootfs 解压不完整：缺少 /bin/sh", "ROOTFS_INCOMPLETE")
+                }
                 sentinel.writeText("ready")
+                android.util.Log.w(TAG, "ensureReady: rootfs 解压完成")
             }
 
             // 3. 启动 PRoot 交互进程
             startPRoot()
+            // 校验 PRoot 进程真的起来了
+            if (process?.isAlive != true) {
+                throw TapcreatorException("PRoot 进程启动失败，请点「重置沙箱」重试", "PROOT_START_FAILED")
+            }
             ready.set(true)
+            android.util.Log.w(TAG, "ensureReady: PRoot 已启动")
         }
     }
 
@@ -98,15 +111,25 @@ class PRootSandbox @Inject constructor(
      */
     suspend fun reset(): Unit = mutex.withLock {
         withContext(Dispatchers.IO) {
-            // 停止 PRoot 进程
-            process?.let { runCatching { it.destroy() } }
+            // 停止 PRoot 进程：先 destroy，等最多 2 秒，未退出则强杀，
+            // 避免进程仍占用 rootfs 文件导致 deleteRecursively 失败
+            process?.let { proc ->
+                runCatching { proc.destroy() }
+                val deadline = System.currentTimeMillis() + 2000L
+                while (System.currentTimeMillis() < deadline && proc.isAlive) {
+                    kotlinx.coroutines.delay(50L)
+                }
+                if (proc.isAlive) runCatching { proc.destroyForcibly() }
+            }
             process = null
             ready.set(false)
             // 删除 rootfs（含 sentinel）
-            rootfsDir.deleteRecursively()
+            android.util.Log.w(TAG, "reset: 删除 ${rootfsDir.absolutePath}")
+            val deleted = rootfsDir.deleteRecursively()
             rootfsDir.mkdirs()
             // 删除 PRoot 二进制（下次重新复制）
-            prootBinary.delete()
+            val prootDeleted = prootBinary.delete()
+            android.util.Log.w(TAG, "reset: rootfs deleted=$deleted prootDeleted=$prootDeleted")
         }
     }
 
@@ -165,10 +188,43 @@ class PRootSandbox @Inject constructor(
                             skipFully(input, padding)
                         }
                     }
-                    '1' -> { // 硬链接，跳过
+                    '1' -> { // 硬链接：目标在 linkname 字段（offset 157, 100 字节），复制目标文件内容
                         if (size > 0) skipFully(input, ((size + 511) / 512) * 512)
+                        val linkName = String(buf, 157, 100).trimEnd('\u0000', ' ').trim()
+                            .removePrefix("./").removePrefix("/")
+                        if (linkName.isNotEmpty()) {
+                            val target = File(rootfsDir, linkName)
+                            runCatching {
+                                outFile.parentFile?.mkdirs()
+                                if (target.exists() && outFile.exists().not()) {
+                                    target.copyTo(outFile)
+                                }
+                            }
+                        }
                     }
-                    else -> { // 其他类型（符号链接等），跳过数据
+                    '2' -> { // 符号链接：linkname = 链接目标
+                        if (size > 0) skipFully(input, ((size + 511) / 512) * 512)
+                        val linkName = String(buf, 157, 100).trimEnd('\u0000', ' ').trim()
+                        if (linkName.isNotEmpty()) {
+                            runCatching {
+                                outFile.parentFile?.mkdirs()
+                                if (outFile.exists().not()) {
+                                    // 用 exec 创建符号链接（filesDir 内允许；java.nio 在 Android 上受限）
+                                    try {
+                                        java.nio.file.Files.createSymbolicLink(
+                                            outFile.toPath(),
+                                            java.nio.file.Paths.get(linkName),
+                                        )
+                                    } catch (e: Exception) {
+                                        // 降级：复制目标（若目标存在）
+                                        val resolved = File(rootfsDir, linkName.removePrefix("./").removePrefix("/"))
+                                        if (resolved.exists()) resolved.copyTo(outFile)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else -> { // 其他类型（FIFO 等），跳过数据
                         if (size > 0) skipFully(input, ((size + 511) / 512) * 512)
                     }
                 }

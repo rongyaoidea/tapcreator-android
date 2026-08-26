@@ -8,6 +8,8 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,13 +21,17 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -71,6 +77,7 @@ fun LibraryScreen(
     vm: LibraryViewModel = hiltViewModel(),
     pickerMode: Boolean = false,
     onPickAsset: ((AssetEntity) -> Unit)? = null,
+    isAssetPicked: ((AssetEntity) -> Boolean)? = null,
 ) {
     val assets by vm.assets.collectAsState()
     val folders by vm.folders.collectAsState()
@@ -182,6 +189,7 @@ fun LibraryScreen(
                         AssetCell(
                             asset = asset,
                             pickerMode = pickerMode,
+                            isPicked = isAssetPicked?.invoke(asset) == true,
                             onPick = if (pickerMode && onPickAsset != null) {
                                 { onPickAsset.invoke(asset) }
                             } else null,
@@ -398,6 +406,7 @@ private fun folderBadge(kind: String): String = when (kind) {
 private fun AssetCell(
     asset: AssetEntity,
     pickerMode: Boolean = false,
+    isPicked: Boolean = false,
     onPick: (() -> Unit)? = null,
     onShare: () -> Unit,
     onSave: () -> Unit,
@@ -410,6 +419,15 @@ private fun AssetCell(
             modifier = Modifier
                 .aspectRatio(1f)
                 // 选取模式：单击=选取/取消；否则：单击=分享
+                .then(
+                    if (isPicked) {
+                        Modifier.border(
+                            width = 3.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = RoundedCornerShape(8.dp),
+                        )
+                    } else Modifier,
+                )
                 .combinedClickable(
                     onClick = if (pickerMode && onPick != null) onPick else onShare,
                     onLongClick = { menu = true },
@@ -430,6 +448,24 @@ private fun AssetCell(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            // 选中角标：pickerMode 且已选中时显示 ✓
+            if (pickerMode && isPicked) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(22.dp)
+                        .background(MaterialTheme.colorScheme.primary, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = "已选中",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
             }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {

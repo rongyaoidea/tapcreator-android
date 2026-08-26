@@ -440,6 +440,9 @@ fun ChatScreen(
                     com.tapcreator.app.ui.library.LibraryScreen(
                         pickerMode = true,
                         onPickAsset = { asset -> viewModel.toggleReferenceAsset(asset) },
+                        isAssetPicked = { asset ->
+                            viewModel.selectedReferenceAssets.any { it.mediaPath != null && it.mediaPath == asset.mediaPath }
+                        },
                     )
                 }
             }
