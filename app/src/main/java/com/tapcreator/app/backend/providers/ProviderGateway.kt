@@ -666,20 +666,6 @@ class ProviderGateway @Inject constructor(
     }
 
     /**
-     * 图生图 prompt 前置「参考图引导」：U1.5 等原生多模态模型需要明确指令才把参考图当基础保留
-     * （否则把参考当弱参考、自由发挥 → 结果与参考差距大）。官方示例「仿照参考图的XX视觉」效果最佳。
-     */
-    private fun refGuidedPrompt(prefs: GenerationPreferences): String {
-        val n = prefs.referenceImages.size
-        val guide = if (n > 1) {
-            "已提供 $n 张参考图。请以这些参考图为基础创作：保留参考图中用户未要求改变的所有属性（主体、构图、色彩、光影、风格），严格遵循下面的文字描述进行修改或生成，不要生成与参考图无关的内容。\n"
-        } else {
-            "已提供 1 张参考图。请以参考图为基础创作：保留参考图中用户未要求改变的所有属性（主体、构图、色彩、光影、风格），严格遵循下面的文字描述进行修改或生成，不要生成与参考图无关的内容。\n"
-        }
-        return guide + prefs.prompt
-    }
-
-    /**
      * 商汤官方平台图生图：POST /v1/images/edits（官方文档），image=纯 base64，model=sensenova-u1.5-lite 等。
      * 参数：model/prompt/image/size/n/output_format/response_format/watermark/prompt_extend。
      */
@@ -694,7 +680,7 @@ class ProviderGateway @Inject constructor(
         val body = buildJsonObject {
             put("model", model.name)
             put("image", imageB64)
-            put("prompt", refGuidedPrompt(prefs))
+            put("prompt", prefs.prompt)
             put("size", normalizeEditsSize(res))
             put("n", 1)
             put("output_format", "png")
@@ -757,7 +743,7 @@ class ProviderGateway @Inject constructor(
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("model", model.name)
-            .addFormDataPart("prompt", refGuidedPrompt(prefs))
+            .addFormDataPart("prompt", prefs.prompt)
             .addFormDataPart("n", "1")
             .addFormDataPart("size", res)
             .addFormDataPart("image", "reference.png", bytes.toRequestBody("image/png".toMediaType()))
@@ -846,7 +832,7 @@ class ProviderGateway @Inject constructor(
             }
             add(buildJsonObject {
                 put("type", "text")
-                put("text", refGuidedPrompt(prefs))
+                put("text", prefs.prompt)
             })
         }
         val body = buildJsonObject {
