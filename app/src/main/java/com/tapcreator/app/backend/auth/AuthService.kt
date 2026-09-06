@@ -42,12 +42,16 @@ class AuthService @Inject constructor(
         if (existing != null && sessionUserId(existing) != null) return existing
         var user = db.userDao().byUsername(ANONYMOUS_USERNAME)
         if (user == null) {
+            // 匿名用户：生成随机盐 + 随机密钥，按与普通用户相同的 PBKDF2 流程哈希。
+            // 占位符换真哈希，避免「一眼可识别的假哈希」；该密钥随机会话丢弃，无法反推登录。
+            val salt = ByteArray(16).also { random.nextBytes(it) }
+            val secret = ByteArray(32).also { random.nextBytes(it) }
             user = UserEntity(
                 id = "local",
                 username = ANONYMOUS_USERNAME,
                 email = null,
-                passwordHash = "",
-                salt = "",
+                passwordHash = hash(toB64(secret), salt),
+                salt = toB64(salt),
                 createdAt = System.currentTimeMillis(),
             )
             db.userDao().insert(user)
@@ -83,7 +87,9 @@ class AuthService @Inject constructor(
     suspend fun login(username: String, password: String): SessionEntity {
         val user = db.userDao().byUsername(username.trim())
             ?: throw AuthFailedException("用户名或密码错误")
-        val salt = fromB64(user.salt)
+        // 空/损坏盐直接判失败而非抛 IllegalArgumentException 崩溃
+        val salt = user.salt?.takeIf { it.isNotBlank() }?.let { runCatching { fromB64(it) }.getOrNull() }
+            ?: throw AuthFailedException("用户名或密码错误")
         if (hash(password, salt) != user.passwordHash) {
             throw AuthFailedException("用户名或密码错误")
         }

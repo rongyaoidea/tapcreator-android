@@ -14,24 +14,8 @@ class ChannelRepositoryPureFunctionsTest {
 
     // ============ resolveResolutions（核心匹配逻辑） ============
 
-    private fun resolveResolutions(modelName: String): String {
-        val n = modelName.lowercase()
-        // 图片模型
-        if (containsAny(n, "gpt-image", "gpt-image-1", "gpt-image-2")) return "1024x1024,1536x1024,1024x1536"
-        if (containsAny(n, "dall-e-2", "dall-e2")) return "1024x1024,512x512,256x256"
-        if (containsAny(n, "dall-e-3", "dall-e3")) return "1024x1024,1792x1024,1024x1792"
-        if (containsAny(n, "wan2.7", "wanx2.7")) return "1024x1024,2048x2048,4096x4096"
-        if (containsAny(n, "wan2.6", "wan2.5")) return "1280x1280,1696x960,960x1696,1472x1104,1104x1472"
-        if (containsAny(n, "qwen-image")) return "1664x928,1328x1328,1472x1104,1104x1472,928x1664"
-        if (containsAny(n, "seedream", "doubao")) return "1K,2K,4K,2048x2048,2560x1440,1440x2560"
-        if (containsAny(n, "sensenova", "u1-fast")) return "2048x2048,2496x1664,1664x2496"
-        // 视频模型
-        if (containsAny(n, "veo")) return "720P,1080P"
-        if (containsAny(n, "minimax", "hailuo", "海螺")) return "768P,2K"
-        if (containsAny(n, "kling", "可灵")) return "720P,2K"
-        if (containsAny(n, "sora", "runway", "pika")) return "720P,1080P"
-        return ""
-    }
+    /** 直接测生产表驱动目录（ResolutionCatalog），不再维护容易脱节的私有镜像 */
+    private fun resolveResolutions(modelName: String): String = ResolutionCatalog.lookup(modelName)
 
     private fun classifyModel(modelName: String): Pair<MediaKind, String> {
         val n = modelName.lowercase()
@@ -65,17 +49,24 @@ class ChannelRepositoryPureFunctionsTest {
     // ============ resolveResolutions 测试 ============
 
     @Test
-    fun `resolveResolutions gpt-image returns known sizes`() {
-        val result = resolveResolutions("gpt-image-1")
+    fun `resolveResolutions 上游图模型 returns known sizes`() {
+        val result = resolveResolutions("上游图模型-2")
         assertTrue(result.isNotBlank())
         assertTrue(result.contains("1024x1024"))
+        assertTrue(result.contains("1536x1024"))
     }
 
     @Test
-    fun `resolveResolutions dall-e-3 returns known sizes`() {
-        val result = resolveResolutions("dall-e-3")
+    fun `resolveResolutions wan2-7 returns 4K sizes`() {
+        val result = resolveResolutions("wan2.7-image-pro")
         assertTrue(result.contains("1024x1024"))
-        assertTrue(result.contains("1792x1024"))
+        assertTrue(result.contains("4096x4096"))
+    }
+
+    @Test
+    fun `resolveResolutions qwen-image returns fixed presets`() {
+        val result = resolveResolutions("qwen-image-max")
+        assertTrue(result.contains("1664x928"))
     }
 
     @Test
@@ -105,13 +96,32 @@ class ChannelRepositoryPureFunctionsTest {
     }
 
     @Test
+    fun `resolveResolutions agnes video returns video sizes`() {
+        val result = resolveResolutions("agnes-video-v2")
+        assertTrue(result.contains("480P"))
+        assertTrue(result.contains("1080P"))
+    }
+
+    @Test
     fun `resolveResolutions unknown model returns empty`() {
         assertEquals("", resolveResolutions("totally-unknown-model-xyz"))
     }
 
     @Test
     fun `resolveResolutions case insensitive`() {
-        assertEquals(resolveResolutions("dall-e-3"), resolveResolutions("DALL-E-3"))
+        assertEquals(resolveResolutions("wan2.7-image-pro"), resolveResolutions("WAN2.7-IMAGE-PRO"))
+    }
+
+    @Test
+    fun `resolveResolutions overrides take precedence`() {
+        try {
+            ResolutionCatalog.overrides = mapOf("自定义模型-x" to "512x512,768x768")
+            assertEquals("512x512,768x768", resolveResolutions("自定义模型-x"))
+            // 覆盖不应影响未覆盖模型的目录匹配
+            assertTrue(resolveResolutions("veo-2").contains("1080P"))
+        } finally {
+            ResolutionCatalog.overrides = emptyMap()
+        }
     }
 
     // ============ classifyModel 测试 ============

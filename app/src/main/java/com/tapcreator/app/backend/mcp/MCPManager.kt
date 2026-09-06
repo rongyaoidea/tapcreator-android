@@ -9,6 +9,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -93,7 +95,7 @@ data class MCPTool(
  * MCP 管理器：管理 MCP 服务器连接，处理 JSON-RPC 通信。
  *
  * 支持两种 MCP 服务器类型：
- *  - stdio：子进程（stdin/stdout JSON-RPC），每次请求启动/复用进程
+ *  - stdio：子进程（stdin/stdout JSON-RPC），复用进程避免频繁启动开销
  *  - http：远程 HTTP 服务器
  *
  * 服务器列表持久化到 DataStore（通过 SettingsStore），App 重启后恢复。
@@ -105,9 +107,16 @@ class MCPManager @Inject constructor(
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val requestId = AtomicInteger(0)
+    private val processLock = Mutex()
 
     /** 已注册的 MCP 服务器 */
     private val servers = ConcurrentHashMap<String, MCPServer>()
+
+    /** stdio 进程缓存：name → Process，避免每次调用都启动新进程 */
+    private val stdioProcesses = ConcurrentHashMap<String, Process>()
+
+    /** stdio 进程 stdout reader（每个进程只建一个 BufferedReader，避免跨调用读缓冲丢失数据） */
+    private val stdioReaders = ConcurrentHashMap<String, java.io.BufferedReader>()
 
     /** 初始化：从 DataStore 恢复已注册的 MCP 服务器列表 */
     suspend fun init() {
@@ -135,10 +144,13 @@ class MCPManager @Inject constructor(
         persist()
     }
 
-    /** 删除一个 MCP 服务器（自动持久化） */
+    /** 删除一个 MCP 服务器（自动持久化，同时销毁复用进程） */
     suspend fun removeServer(name: String): Boolean {
         val removed = servers.remove(name) != null
-        if (removed) persist()
+        if (removed) {
+            closeProcess(name)
+            persist()
+        }
         return removed
     }
 
@@ -185,65 +197,106 @@ class MCPManager @Inject constructor(
         return pb.start()
     }
 
+    /** 获取或启动 stdio 进程（复用已存在的进程） */
+    private suspend fun getOrCreateProcess(server: MCPServer): Process = processLock.withLock {
+        val existing = stdioProcesses[server.name]
+        if (existing != null && existing.isAlive) {
+            return@withLock existing
+        }
+        // 清理已死亡的进程
+        closeProcess(server.name)
+        val newProc = startProcess(server)
+        stdioProcesses[server.name] = newProc
+        stdioReaders[server.name] = newProc.inputStream.bufferedReader()
+        newProc
+    }
+
+    /** 关闭某个服务器的子进程并清理其 reader（幂等） */
+    private fun closeProcess(name: String) {
+        runCatching { stdioProcesses.remove(name)?.destroy() }
+        runCatching { stdioReaders.remove(name)?.close() }
+    }
+
+    /** 读取一条 newline-delimited JSON-RPC 响应（进程复用模式下不能 readText() 等 EOF） */
+    private fun readResponseLine(serverName: String, timeoutMs: Long = 30_000L): String? {
+        val reader = stdioReaders[serverName] ?: return null
+        var deadline = System.currentTimeMillis() + timeoutMs
+        val sb = StringBuilder()
+        while (System.currentTimeMillis() < deadline) {
+            if (reader.ready()) {
+                val line = reader.readLine() ?: return null
+                if (line.isNotBlank()) {
+                    sb.append(line)
+                    // JSON-RPC 也可能跨行：累计到能解析出完整 result/error 为止
+                    val candidate = sb.toString()
+                    val parsed = runCatching { json.parseToJsonElement(candidate).jsonObject }.getOrNull()
+                    if (parsed != null && (parsed.containsKey("result") || parsed.containsKey("error"))) {
+                        return candidate
+                    }
+                }
+            } else {
+                Thread.sleep(25)
+            }
+        }
+        return null // 超时
+    }
+
     private suspend fun listToolsStdio(server: MCPServer): List<MCPTool> = withContext(Dispatchers.IO) {
-        val proc = startProcess(server)
-        try {
-            val req = buildJsonObject {
-                put("jsonrpc", "2.0")
-                put("id", requestId.incrementAndGet())
-                put("method", "list_tools")
-            }
-            proc.outputStream.write((req.toString() + "\n").toByteArray())
-            proc.outputStream.flush()
-            proc.outputStream.close()
-            val resp = proc.inputStream.bufferedReader().readText()
-            proc.waitFor()
-            val root = json.parseToJsonElement(resp).jsonObject
-            val result = root["result"]?.jsonObject
-            val tools = result?.get("tools")?.jsonArray ?: return@withContext emptyList()
-            tools.mapNotNull { el ->
-                val obj = el.jsonObject
-                val namePrim = obj["name"]?.jsonPrimitive
-                val descPrim = obj["description"]?.jsonPrimitive
-                MCPTool(
-                    name = namePrim?.content ?: return@mapNotNull null,
-                    description = descPrim?.content ?: "",
-                    inputSchema = obj["inputSchema"]?.jsonObject ?: buildJsonObject { },
-                )
-            }
-        } finally {
-            proc.destroy()
+        val proc = getOrCreateProcess(server)
+        val req = buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("id", requestId.incrementAndGet())
+            put("method", "list_tools")
+        }
+        proc.outputStream.write((req.toString() + "\n").toByteArray())
+        proc.outputStream.flush()
+        // 不关闭 outputStream 以复用进程
+        val resp = readResponseLine(server.name) ?: return@withContext emptyList()
+        val root = json.parseToJsonElement(resp).jsonObject
+        val result = root["result"]?.jsonObject
+        val tools = result?.get("tools")?.jsonArray ?: return@withContext emptyList()
+        tools.mapNotNull { el ->
+            val obj = el.jsonObject
+            val namePrim = obj["name"]?.jsonPrimitive
+            val descPrim = obj["description"]?.jsonPrimitive
+            MCPTool(
+                name = namePrim?.content ?: return@mapNotNull null,
+                description = descPrim?.content ?: "",
+                inputSchema = obj["inputSchema"]?.jsonObject ?: buildJsonObject { },
+            )
         }
     }
 
     private suspend fun callToolStdio(server: MCPServer, toolName: String, arguments: JsonObject): String =
         withContext(Dispatchers.IO) {
-            val proc = startProcess(server)
-            try {
-                val req = buildJsonObject {
-                    put("jsonrpc", "2.0")
-                    put("id", requestId.incrementAndGet())
-                    put("method", "call_tool")
-                    put("params", buildJsonObject {
-                        put("name", toolName)
-                        put("arguments", arguments)
-                    })
-                }
-                proc.outputStream.write((req.toString() + "\n").toByteArray())
-                proc.outputStream.flush()
-                proc.outputStream.close()
-                val resp = proc.inputStream.bufferedReader().readText()
-                proc.waitFor()
-                val root = json.parseToJsonElement(resp).jsonObject
-                val result = root["result"]?.jsonObject
-                val content = result?.get("content")?.jsonArray
-                content?.joinToString("\n") { el ->
-                    el.jsonObject["text"]?.jsonPrimitive?.content ?: ""
-                } ?: "（MCP 工具返回空结果）"
-            } finally {
-                proc.destroy()
+            val proc = getOrCreateProcess(server)
+            val req = buildJsonObject {
+                put("jsonrpc", "2.0")
+                put("id", requestId.incrementAndGet())
+                put("method", "call_tool")
+                put("params", buildJsonObject {
+                    put("name", toolName)
+                    put("arguments", arguments)
+                })
             }
+            proc.outputStream.write((req.toString() + "\n").toByteArray())
+            proc.outputStream.flush()
+            // 不关闭 outputStream 以复用进程
+            val resp = readResponseLine(server.name) ?: return@withContext "（MCP 响应超时或无响应）"
+            val root = json.parseToJsonElement(resp).jsonObject
+            val result = root["result"]?.jsonObject
+            val content = result?.get("content")?.jsonArray
+            content?.joinToString("\n") { el ->
+                el.jsonObject["text"]?.jsonPrimitive?.content ?: ""
+            } ?: "（MCP 工具返回空结果）"
         }
+
+    /** 销毁所有 stdio 复用进程（用于清理/重置） */
+    suspend fun destroyAllProcesses() {
+        processLock.withLock {
+            stdioProcesses.keys.toList().forEach { closeProcess(it) }
+        }
+    }
 
     // ==================== HTTP 实现 ====================
 

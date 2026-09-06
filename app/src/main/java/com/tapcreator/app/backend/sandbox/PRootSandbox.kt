@@ -52,6 +52,53 @@ class PRootSandbox @Inject constructor(
         private const val MAX_OUTPUT_BYTES = 1_048_576 // 1MB
         /** 等待沙箱 shell 就绪标记的最长时间（仅等 shell 启动，不等 apk 安装） */
         private const val READY_TIMEOUT_MS = 10_000L
+        /** 命令白名单：首命令必须在此列表内；破坏性操作由 BANNED_COMMAND_PATTERNS 二次拦截 */
+        private val ALLOWED_COMMAND_PREFIXES = listOf(
+            "ffmpeg", "curl", "wget", "python3", "python", "pip", "pip3", "apk",
+            "ls", "cat", "grep", "find", "cp", "mv", "mkdir", "rm", "chmod",
+            "chown", "ln", "head", "tail", "wc", "sort", "uniq", "sed", "awk",
+            "jq", "tar", "gzip", "gunzip", "xz", "bzip2", "zstd", "zip",
+            "unzip", "git", "npx", "node", "npm", "make", "cmake", "gcc",
+            "g++", "clang", "ld", "ar", "ranlib", "which", "echo", "printf",
+            "true", "false", "test", "sleep", "date", "hostname", "id",
+            "whoami", "uname", "file", "md5sum", "sha256sum", "openssl",
+            "xxd", "hexdump", "strings", "stat", "du", "df", "free", "top",
+            "ps", "kill", "killall", "nice", "nohup", "disown", "bg", "fg",
+            "jobs", "history", "sh", "bash", "zsh", "ash", "dash", "source",
+            "timeout", "env", "export", "cd", "pwd", "touch", "tee", "seq",
+            "diff", "comm", "tr", "cut", "paste", "basename", "dirname",
+            "readlink", "realpath", "od", "column", "if", "then", "else",
+            "elif", "fi", "for", "while", "until", "do", "done", "case",
+            "esac", "sudo", "su", "passwd", "useradd", "usermod", "groupadd",
+            "mount", "umount", "fdisk", "parted", "dd",
+        )
+        /**
+         * 禁止的命令模式（即使前缀匹配也不允许）：
+         * - 递归/无标志删除根路径 "/"、系统目录树、$VAR 展开目标（无法静态判断）；
+         * - dd 直接读取系统块设备/关键目录。
+         * 沙箱工作区（/work、/tmp、/data、/storage、/sdcard）内的删除仍放行。
+         */
+        private val BANNED_COMMAND_PATTERNS = listOf(
+            // 删除根 "/"（rm /、rm -f /、rm -rf / …）
+            Regex("""rm(\s+-[a-zA-Z]*[rRfF]+\S*)?\s+["']?/\s*(\||;|&&|$|#|'|\")"""),
+            // 删除系统目录树（/etc /proc /sys /system /boot /dev /sbin /bin /lib /usr /var /root /run /mnt /home …）
+            Regex("""rm(\s+-[a-zA-Z]*[rRfF]+\S*)?\s+["']?/(etc|proc|sys|system|boot|dev|sbin|bin|lib|usr|var|root|run|mnt|home)(\s|/|$|\||;|&&|'|\")"""),
+            // rm 配合 $VAR 展开：目标不可静态判断，一律拦截
+            Regex("""rm(\s+-[a-zA-Z]*[rRfF]+\S*)?\s+["']?[$](?:\w+|\{[^}]*\})"""),
+            // dd 直接读取系统块设备/关键目录
+            Regex("""dd\s+if=\s*(/dev/(sda|sdb|mmcblk|nvme)\S*|/etc|/proc|/sys)"""),
+        )
+
+        /** 验证命令是否安全（白名单首命令 + 禁止模式检查） */
+        fun validateCommand(command: String): Boolean {
+            val trimmed = command.trim()
+            if (trimmed.isEmpty()) return false
+            // 禁止模式优先（含拼字/多命令链/rm 破坏性目标）
+            if (BANNED_COMMAND_PATTERNS.any { it.containsMatchIn(trimmed) }) return false
+            // 首命令必须在白名单（前缀含尾随空格时先 trim）
+            val firstToken = trimmed.split(Regex("""\s+""")).first().lowercase()
+            return ALLOWED_COMMAND_PREFIXES.any { firstToken == it.trim().lowercase() }
+        }
 
         /**
          * 纯 tar 拆包（调用方完成 gzip 解压）：普通文件落盘，符号链接/硬链接收集后统一补建。
@@ -449,6 +496,9 @@ class PRootSandbox @Inject constructor(
     suspend fun exec(command: String, timeoutMs: Long = 30_000L): ShellResult = mutex.withLock {
         if (!ready.get() || process?.isAlive != true) {
             throw TapcreatorException("沙箱未就绪，请先调用 ensureReady()", "SANDBOX_NOT_READY")
+        }
+        if (!validateCommand(command)) {
+            throw TapcreatorException("命令不被允许：$command", "SANDBOX_COMMAND_BLOCKED")
         }
         withContext(Dispatchers.IO) {
             val marker = "___CMD_END_${System.nanoTime()}_${Thread.currentThread().id}___"

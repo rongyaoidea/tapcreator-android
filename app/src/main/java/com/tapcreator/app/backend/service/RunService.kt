@@ -71,6 +71,12 @@ class RunService @Inject constructor(
     /** 记录每个 run 正在执行的生成协程，供 cancel() 及时中断挂起中的上游轮询 */
     private val runningJobs = ConcurrentHashMap<String, Job>()
 
+    /** 视频段下载专用 client：长时大体积下载覆盖超时；常驻复用避免每段 newBuilder 泄漏线程池/连接池 */
+    private val downloadClient: okhttp3.OkHttpClient = http.newBuilder()
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
     /** 视频单段续生成的上限（秒）——按常见视频模型的单段窗口设定，超长时自动分段 */
     private val SEGMENT_SECONDS = 8
 
@@ -441,11 +447,8 @@ class RunService @Inject constructor(
         if (result.mediaBytes != null) {
             writeBytes(result.mediaBytes)
         } else if (result.mediaUrl != null) {
-            // 复用注入的单例 client（连接池/通用配置），仅对长时大体积下载覆盖超时
-            val client = http.newBuilder()
-                .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
-                .build()
+            // 复用常驻下载 client（连接池/通用配置），仅对长时大体积下载覆盖超时
+            val client = downloadClient
             // 下载瞬时断连重试 1 次，最终映射为可读提示
             repeat(2) { i ->
                 try {
@@ -544,6 +547,10 @@ class RunService @Inject constructor(
     private companion object {
         const val MAX_REF_IMAGES = 8
         const val MAX_REF_VIDEOS = 2
+        /** 单段视频参考最大字节数：base64 后 ~20MB 已是请求体上限 */
+        const val MAX_REF_VIDEO_BYTES = 15L * 1024 * 1024
+        /** 音频参考最大字节数：5MB 足够音色参考，避免请求体爆炸 */
+        const val MAX_REF_AUDIO_BYTES = 5L * 1024 * 1024
         /** 参考图缩放最长边：足以支撑多模态识图/身份锚点，且把单张体积压到 ~200KB */
         const val REF_IMAGE_MAX_SIDE = 1536
         const val REF_IMAGE_JPEG_QUALITY = 85
@@ -646,6 +653,11 @@ class RunService @Inject constructor(
             val f = path?.let(::File)?.takeIf { it.exists() } ?: return
             // 视频 base64 体积巨大，身份参考保留前 2 段即可，避免请求体爆炸
             if (videoFiles.size >= MAX_REF_VIDEOS) return
+            // 单段视频最大 15MB：超限跳过（base64 后 ~20MB 已是请求体上限）
+            if (f.length() > MAX_REF_VIDEO_BYTES) {
+                android.util.Log.w("RunService", "resolveReferences: 视频参考超限已跳过 path=$path size=${f.length()}")
+                return
+            }
             runCatching {
                 val bytes = f.readBytes()
                 videoFiles += com.tapcreator.app.backend.providers.IdentityFile(
@@ -658,6 +670,10 @@ class RunService @Inject constructor(
         fun addAudio(path: String?) {
             if (audio != null) return
             val f = path?.let(::File)?.takeIf { it.exists() } ?: return
+            if (f.length() > MAX_REF_AUDIO_BYTES) {
+                android.util.Log.w("RunService", "resolveReferences: 音频参考超限已跳过 path=$path size=${f.length()}")
+                return
+            }
             runCatching {
                 val b64 = java.util.Base64.getEncoder().encodeToString(f.readBytes())
                 audio = "data:audio/mpeg;base64,$b64"

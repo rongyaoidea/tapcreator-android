@@ -243,6 +243,7 @@ class ProviderGateway @Inject constructor(
         val b64 = first["b64_json"]?.jsonPrimitive?.content
         return when {
             url != null && url.startsWith("http") -> UpstreamResult(kind = MediaKind.VIDEO, mediaUrl = url, mime = "video/mp4")
+            url != null && url.startsWith("data:") -> UpstreamResult(kind = MediaKind.VIDEO, mediaBytes = decodeB64(url.substringAfter(";base64,", "")), mime = "video/mp4")
             url != null -> UpstreamResult(kind = MediaKind.VIDEO, mediaBytes = decodeB64(url), mime = "video/mp4")
             b64 != null -> UpstreamResult(kind = MediaKind.VIDEO, mediaBytes = decodeB64(b64), mime = "video/mp4")
             else -> throw TapcreatorException("上游未返回可下载视频", "UPSTREAM_EMPTY")
@@ -502,7 +503,7 @@ class ProviderGateway @Inject constructor(
             if (line.isEmpty()) {
                 // 一帧结束：解析缓冲内容
                 if (frame.isEmpty()) continue
-                done = parseFrame(frame.toString(), content, onToken, onReasoning, toolNameRef = { toolName = it }, toolArgs, toolIdRef = { toolId = it })
+                done = parseFrame(frame.toString(), content, onToken, onReasoning, reasoningText, toolNameRef = { toolName = it }, toolArgs, toolIdRef = { toolId = it })
                 frame.setLength(0)
                 continue
             }
@@ -516,7 +517,7 @@ class ProviderGateway @Inject constructor(
         }
         // 处理最后一帧（可能没有尾随空行）
         if (!done && frame.isNotEmpty()) {
-            parseFrame(frame.toString(), content, onToken, onReasoning, { toolName = it }, toolArgs, { toolId = it })
+            parseFrame(frame.toString(), content, onToken, onReasoning, reasoningText, { toolName = it }, toolArgs, { toolId = it })
             frame.setLength(0)
         }
         // 返回结构化 ChatResponse：工具调用直接以 ToolCall 对象返回，文本内容分离
@@ -545,6 +546,7 @@ class ProviderGateway @Inject constructor(
         content: StringBuilder,
         onToken: (String) -> Unit,
         onReasoning: (String) -> Unit,
+        reasoningText: StringBuilder,
         toolNameRef: (String) -> Unit,
         toolArgs: StringBuilder,
         toolIdRef: (String) -> Unit = {},
@@ -563,6 +565,7 @@ class ProviderGateway @Inject constructor(
         val reasonTok = delta?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
         if (!reasonTok.isNullOrEmpty()) {
             onReasoning(reasonTok)
+            reasoningText.append(reasonTok)
         }
         delta?.get("tool_calls")?.jsonArray?.forEach { tc ->
             val fn = tc.jsonObject.get("function")?.jsonObject
@@ -772,7 +775,9 @@ class ProviderGateway @Inject constructor(
         // 值用「纯 base64」而非 data URI：多数 OpenAI 兼容图生图实现（尤其国产聚合商）的 image 字段
         // 文档写的是 base64 编码；data URI（data:image/...;base64,）会被部分服务忽略或拒收。
         val imageRef = prefs.referenceImages.firstOrNull()
-        val imageB64 = imageRef?.substringAfter(";base64,", "")?.takeIf { it.isNotEmpty() } ?: imageRef
+        val imageB64 = imageRef?.let { ref ->
+            if (ref.startsWith("data:")) ref.substringAfter(";base64,", "")?.takeIf { it.isNotEmpty() } else ref.takeIf { it.isNotEmpty() }
+        }
         android.util.Log.i("ProviderGateway", "openAiImageGenerations: 参考图 ${prefs.referenceImages.size} 张，imageB64=${imageB64?.take(48)}... 是否上送=${imageB64 != null}")
         fun body(withImage: Boolean) = buildJsonObject {
             put("model", model.name)

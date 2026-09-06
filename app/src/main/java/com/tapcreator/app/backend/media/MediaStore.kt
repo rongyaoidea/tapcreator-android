@@ -175,14 +175,25 @@ class MediaStore @Inject constructor(
     }
 
     /** 图片统一转 WebP 压缩，沉淀占空间更小 —— WebP 预览已公开。
-     *  显式 IO 调度：解码/缩放/压缩是重 IO+CPU，防御性隔离，避免调用方上下文变化时阻塞。 */
+     *  显式 IO 调度：解码/缩放/压缩是重 IO+CPU，防御性隔离，避免调用方上下文变化时阻塞。
+     *  两段式解码防 OOM：先 inJustDecodeBounds 读尺寸，再按采样率解码，避免 20MP+ 图整幅落内存。 */
     private suspend fun generatePreview(source: File, baseKey: String): String =
         withContext(Dispatchers.IO) {
             runCatching {
-                val bmp = BitmapFactory.decodeFile(source.absolutePath) ?: return@withContext baseKey
-                val scaled = if (bmp.width > 1024) {
-                    val h = (bmp.height * 1024f / bmp.width).toInt()
-                    android.graphics.Bitmap.createScaledBitmap(bmp, 1024, h, true)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(source.absolutePath, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext baseKey
+
+                val maxDim = 1024
+                val opts = BitmapFactory.Options().apply {
+                    // 采样到不超过 2048 再缩放：像素总量限制在 ~4M，远离内存峰值
+                    inJustDecodeBounds = false
+                    inSampleSize = computeSampleSize(bounds.outWidth, bounds.outHeight, 2 * maxDim)
+                }
+                val bmp = BitmapFactory.decodeFile(source.absolutePath, opts) ?: return@withContext baseKey
+                val scaled = if (bmp.width > maxDim) {
+                    val h = (bmp.height * maxDim.toFloat() / bmp.width).toInt()
+                    android.graphics.Bitmap.createScaledBitmap(bmp, maxDim, h, true)
                 } else bmp
                 val key = "preview/${System.currentTimeMillis()}-${UUID.randomUUID().toString().substring(0, 6)}.webp"
                 val out = fileFor(key)
@@ -191,9 +202,17 @@ class MediaStore @Inject constructor(
                     scaled.compress(android.graphics.Bitmap.CompressFormat.WEBP, 82, it)
                 }
                 if (scaled !== bmp) scaled.recycle()
+                bmp.recycle()
                 key
             }.getOrDefault(baseKey)
         }
+
+    /** 计算 2 的幂采样率，使解码后最大边长 ≤ maxDim（防 4 倍缓冲 OOM） */
+    private fun computeSampleSize(width: Int, height: Int, maxDim: Int): Int {
+        var sample = 1
+        while (width / (sample * 2) >= maxDim || height / (sample * 2) >= maxDim) sample *= 2
+        return sample
+    }
 
     private fun safeDownload(url: String, target: File) {
         // 复用 Hilt 全局单例 client（读超时 300s，满足大体积视频下载），

@@ -258,7 +258,8 @@ $styleBlock
                         toolsSupported = false
                         res.response
                     }
-                    BrainGiveUp -> {
+                    is BrainGiveUp -> {
+                        toolsSupported = false
                         st.trace += ChatMessage("user", "[工具异常] 大脑调用失败。请重新输出一个动作。")
                         continue
                     }
@@ -1439,14 +1440,17 @@ $styleBlock
     }
 
     /** 读取产出卡，转成 data URI 供识图校验：
-     *  图片直接读卡文件；视频提取首帧关键帧（JPEG）。失败返回 null（跳过识图）。 */
+     *  图片直接读卡文件（限 4MB 防 OOM）；视频提取首帧关键帧（JPEG）。失败返回 null（跳过识图）。 */
     private suspend fun producedMediaDataUri(card: CardEntity, kind: MediaKind): String? =
         withContext(Dispatchers.IO) {
             val path = card.mediaPath?.takeIf { it.isNotBlank() }
                 ?: card.previewPath?.takeIf { it.isNotBlank() }
                 ?: return@withContext null
+            val file = File(path).takeIf { it.exists() && it.length() in 1..MAX_VISION_BYTES }
+                ?: return@withContext null
             val bytes = try {
-                if (kind == MediaKind.VIDEO) extractVideoFrame(path) else File(path).takeIf { it.exists() }?.readBytes()
+                if (kind == MediaKind.VIDEO) extractVideoFrame(path)
+                else file.readBytes()
             } catch (t: Throwable) {
                 null
             } ?: return@withContext null
@@ -1555,5 +1559,7 @@ private suspend fun handleBrainCallFailure(
         private const val VISION_TIMEOUT_MS = 30_000L
         /** 识图校验结论截断长度 */
         private const val VISION_RESULT_LIMIT = 300
+        /** 识图校验图片最大字节数（4MB 防 OOM） */
+        private const val MAX_VISION_BYTES = 4L * 1024 * 1024
     }
 }

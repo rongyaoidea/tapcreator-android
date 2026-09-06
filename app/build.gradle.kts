@@ -20,10 +20,16 @@ android {
         targetSdk = 34
         versionCode = 2
         versionName = "1.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // 沙箱 proot/loader/talloc 均为 arm64 专用；限定 ABI，非 arm64 设备明确拒绝安装而非安装后沙箱失效
             abiFilters += listOf("arm64-v8a")
         }
+    }
+
+    sourceSets {
+        // 供 MigrationTestHelper 读取导出的 Room schema JSON
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 
     buildTypes {
@@ -103,6 +109,12 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
+    // Crashlytics 运行时 SDK：无 google-services.json 时静默 no-op 不崩溃。
+// 若需上传崩溃映射（release 混淆），请补 google-services 插件 + google-services.json，
+// 并重新在根/模块 build 中声明 com.google.firebase.crashlytics Gradle 插件。
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.crashlytics)
+
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 
@@ -119,6 +131,15 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.core.ktx)
+    androidTestImplementation(libs.androidx.room.testing)
+    androidTestImplementation(libs.hilt.android.testing)
+    kspAndroidTest(libs.hilt.compiler)
+    androidTestImplementation(platform(libs.firebase.bom))
+    androidTestImplementation(libs.firebase.crashlytics)
 
     debugImplementation(libs.androidx.ui.tooling)
 }

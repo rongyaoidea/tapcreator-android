@@ -278,52 +278,9 @@ class ChannelRepository @Inject constructor(
         else -> "text"
     }
 
-    /** 内置分辨率知识库：按模型名关键词自动匹配该模型已知支持的合法分辨率。
-     *  返回逗号分隔字符串；未命中返回空（让用户在生成页手动填写，不硬塞未知档位）。
-     *  数据来源：各家官方 API 文档（阿里云百炼、腾讯混元、智谱 BIGModel、火山/豆包 Seedream 等）。
-     *  说明：标准 OpenAI 兼容 /models 不会返回分辨率，只有已知模型能可靠预填。 */
-    internal fun resolveResolutions(modelName: String): String {
-        val n = modelName.lowercase()
-        // —— 图片模型 ——
-        // OpenAI 系
-        if (containsAny(n, "上游图模型", "上游图模型-1", "上游图模型-2")) return "1024x1024,1536x1024,1024x1536"
-        if (containsAny(n, "上游图模型-2", "上游图模型2", "上游图模型 2")) return "1024x1024,512x512,256x256"
-        if (containsAny(n, "上游图模型-3", "上游图模型3", "上游图模型 3")) return "1024x1024,1792x1024,1024x1792"
-        // 阿里云通义万相 / 千问 Qwen-Image（多源核实：阿里云百炼「文本生成图像」官方文档 + QwenCloud API 参考 + DashScope SDK）
-        // wan2.7-image-pro：官方支持 1K(1024x1024)/2K(2048x2048)/4K(4096x4096)，默认 2K，宽高比 1:8–8:1
-        if (containsAny(n, "wan2.7", "wanx2.7")) return "1024x1024,2048x2048,4096x4096"
-        // wan2.6-t2i / wan2.5-t2i-preview：总像素在 [1280x1280, 1440x1440]，宽高比 1:4–4:1；官方推荐就这套预设
-        if (containsAny(n, "wan2.6", "wan2.5", "wanx2.6", "wanx2.5", "wan2.6-t2i", "wan2.5-t2i")) return "1280x1280,1696x960,960x1696,1472x1104,1104x1472"
-        // wan2.2/wan2.1/wan2.0 等旧版：宽高 ∈ [512,1440]（单边不超 1440，总面积≤1440²）
-        if (containsAny(n, "wan2.2", "wan2.1", "wanx2.2", "wanx2.1", "wan2.0", "wanx2.0", "wan-image", "wanx")) return "1024x1024,1280x720,720x1280,1280x1280,1440x1440"
-        // qwen-image / qwen-image-plus / qwen-image-max：官方固定预设，默认 1664x928(16:9)
-        if (containsAny(n, "qwen-image", "qwen-img", "qwen-2-5")) return "1664x928,1328x1328,1472x1104,1104x1472,928x1664"
-        // 腾讯混元 Hy-Image（hy-image-v3 / hunyuan-image）：宽高[512,2048] 且面积≤1024²，官方 37 组预设，取常用档
-        if (containsAny(n, "hy-image", "hunyuan-image", "hunyuanimg", "混元")) return "1024x1024,1280x720,720x1280,1152x896,896x1152"
-        // 智谱 CogView-4 / GLM-Image：宽高 [512,2048] 且能被 32 整除，最大像素 ≤ 2^21（2K 上限）；官方示例用 1440x720
-        if (containsAny(n, "cogview", "glm-image", "glm-4v")) return "1024x1024,1440x720,720x1440,1536x1024,1024x1536,1280x1280"
-        // 字节豆包 / 即梦 Seedream 4.0+：size 支持 1K/2K/4K 或具体像素，默认 2048x2048(1:1)，官方预设多比例
-        if (containsAny(n, "seedream", "doubao", "jimeng", "即梦", "豆包", "born-in-speech")) return "1K,2K,4K,2048x2048,2560x1440,1440x2560,2304x1728,1728x2304"
-        // 上游模型 上游模型 U1.5 Lite：支持 4K 真实视觉创作（U1 升级版），在 U1 的 2K 基准上加 4K 档位
-        if (containsAny(n, "u1.5", "u1-5", "u15", "上游模型-u1.5")) return "4K,2K,2048x2048,2496x1664,1664x2496,2368x1760,1760x2368,2272x1824,1824x2272,2752x1536,1536x2752,2752x1184,1184x2752,3840x2160,2160x3840,4096x4096"
-        // 上游模型 上游模型 U1 / U1 Fast：信息图专用，经 /v1/images/generations 调用，
-        // 2K 基准输出，官方支持 11 种宽高比（比例从 9:21 到 21:9）。取自官方 MCP 仓库尺寸表 + 官方 PR。#115。
-        if (containsAny(n, "上游模型", "sense-nova", "上游模型", "u1-fast", "上游模型-u1")) return "2048x2048,2496x1664,1664x2496,2368x1760,1760x2368,2272x1824,1824x2272,2752x1536,1536x2752,2752x1184,1184x2752"
-        // Agnes（agnes-image / agnes-video，OpenAI 兼容网关）
-        if (containsAny(n, "agnes-image", "agnes-image-2", "agnesvideo")) {
-            return "1024x1024,1536x1024,1024x1536"
-        }
-        if (containsAny(n, "agnes") && containsAny(n, "video", "v2")) return "480P,720P,1080P"
-        if (containsAny(n, "agnes")) return "1024x1024,1536x1024,1024x1536"
-        // —— 视频模型 ——
-        if (containsAny(n, "veo")) return "720P,1080P"
-        if (containsAny(n, "minimax", "minimax", "hailuo")) return "768P,2K"
-        if (containsAny(n, "wan2.5-t2v", "wan2.2-t2v", "wan-t2v", "wan-i2v", "wan2.5-i2v")) return "720P,1080P"
-        if (containsAny(n, "kling", "可灵")) return "720P,2K"
-        if (containsAny(n, "sora", "runway", "pika")) return "720P,1080P"
-        // 其余未知 → 留空，手动输入
-        return ""
-    }
+    /** 内置分辨率知识库：表驱动目录 + 远程覆盖，见 [ResolutionCatalog]。
+     *  返回逗号分隔字符串；未命中返回空（让用户在生成页手动填写，不硬塞未知档位）。 */
+    internal fun resolveResolutions(modelName: String): String = ResolutionCatalog.lookup(modelName)
 
     /** 根据模型名推断其媒体类型与能力标签（仅用于把"新增渠道"的模型目录落成可选模型） */
     internal fun classifyModel(modelName: String): Pair<MediaKind, String> {

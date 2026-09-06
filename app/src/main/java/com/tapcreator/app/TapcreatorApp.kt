@@ -62,8 +62,15 @@ class TapcreatorApp : Application() {
      * 链式保留上一个处理器，不吞掉系统默认行为。
      */
     private fun installCrashLogger() {
+        // 预创建 Crashlytics 实例（无 google-services.json 时静默 no-op，不崩溃）
+        val crashlytics = runCatching {
+            com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance()
+        }.getOrNull()
         val prev = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            // 同时上报 Crashlytics（若已配置 Firebase）
+            crashlytics?.recordException(throwable)
+            crashlytics?.setCustomKey("thread", thread.name)
             val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())
             val sw = java.io.StringWriter()
             throwable.printStackTrace(PrintWriter(sw))
