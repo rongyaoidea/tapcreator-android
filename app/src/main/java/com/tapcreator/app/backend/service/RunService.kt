@@ -299,8 +299,8 @@ class RunService @Inject constructor(
         val referenceAudio = refs.audioUri
         // 身份参考：角色/产品的多视角图片+视频 → 作为 H3 首段的 video_file/image_file，固定人物/产品身份
         val identityRefs = com.tapcreator.app.backend.providers.IdentityRefs(
-            videos = refs.videoFiles.take(3),
-            images = refs.imageFiles.take(6),
+            videos = refs.videoFiles.take(3),   // H3 Ref2VA：参考视频 ≤3（每段/合计 ≤15s、≤50MB）
+            images = refs.imageFiles.take(9),   // H3 Ref2VA：参考图 ≤9
         )
 
         val target = (pref.seconds ?: 5).coerceIn(1, 120)
@@ -545,7 +545,7 @@ class RunService @Inject constructor(
 
     /** 单次生成的参考图片数量上限：多张原图 base64 会把请求体撑到数十 MB，触发网关断连 */
     private companion object {
-        const val MAX_REF_IMAGES = 8
+        const val MAX_REF_IMAGES = 9   // MiniMax H3 Ref2VA 允许 ≤9 张参考图
         const val MAX_REF_VIDEOS = 2
         /** 单段视频参考最大字节数：base64 后 ~20MB 已是请求体上限 */
         const val MAX_REF_VIDEO_BYTES = 15L * 1024 * 1024

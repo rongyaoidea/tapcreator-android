@@ -664,8 +664,13 @@ class ProviderGateway @Inject constructor(
     private fun openAiImage(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val hasRef = prefs.referenceImages.isNotEmpty()
         if (hasRef) {
-            // 图生图统一优先 /v1/images/edits（OpenAI 规范）：兼容服务只需换 base_url 即可迁移。
-            // SenseNova 官方用 JSON（image=纯 base64），其余 OpenAI 兼容用 multipart form-data。
+            // Agnes 网关无 /images/edits：参考图必须放进 /images/generations 的 extra_body.image
+            // （字符串数组，URL 或 data URI 均可）。此前走 edits→多模态→generations 顶层 image，
+            // agnes 忽略顶层 image → 静默纯文生图（用户反馈"参考完全没生效"）。故优先特判。
+            if (isAgnes(channel, model)) {
+                return openAiImageAgnes(channel, secrets, model, prefs)
+            }
+            // 其余 OpenAI 兼容：优先 /v1/images/edits（SenseNova 用 JSON，其它用 multipart form-data）；
             // 失败 → 兜底多模态 chat → 兜底 /images/generations；仍失败明确报错，绝不静默丢参考。
             return try {
                 if (isSensenova(channel, model)) {
@@ -700,6 +705,49 @@ class ProviderGateway @Inject constructor(
         return base.contains("sensenova") || base.contains("sensetime") ||
             mn.contains("u1") || mn.contains("u1.5") || mn.contains("日日新") || mn.contains("sensenova")
     }
+
+    /** 是否 Agnes 网关（OpenAI 兼容图像，但图生图接口不同：无 /images/edits）。 */
+    private fun isAgnes(channel: Channel, model: ModelOption): Boolean {
+        val base = channel.baseUrl.lowercase()
+        val mn = model.name.lowercase()
+        return base.contains("agnes") || mn.contains("agnes")
+    }
+
+    /**
+     * Agnes 图生图：官方无 /images/edits，参考图放 /images/generations 的 extra_body.image
+     * （字符串数组，URL 或 data:image/..;base64 均可，多张=多图合成）。response_format 亦须在
+     * extra_body 内（顶层会 400）。
+     */
+    private fun openAiImageAgnes(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+        val res = normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
+            ?: prefs.resolution?.takeIf { it.contains('x') }
+            ?: prefs.ratio?.let(::ratioToSize)
+            ?: "1024x1024"
+        android.util.Log.i("ProviderGateway", "openAiImageAgnes: 参考图 ${prefs.referenceImages.size} 张 → extra_body.image")
+        val resp = execute(channel, secrets, "/images/generations", buildAgnesImageBody(model.name, prefs.prompt, res, prefs.referenceImages))
+        val first = resp.jsonObject["data"]?.jsonArray?.firstOrNull()?.jsonObject
+            ?: throw TapcreatorException("Agnes 未返回图片", "UPSTREAM_EMPTY")
+        val b64 = first["b64_json"]?.jsonPrimitive?.content
+        val url = first["url"]?.jsonPrimitive?.content
+        return when {
+            b64 != null && b64.isNotEmpty() -> UpstreamResult(kind = MediaKind.IMAGE, mediaBytes = decodeB64(b64), mime = "image/*")
+            url != null && url.startsWith("data:") -> UpstreamResult(kind = MediaKind.IMAGE, mediaBytes = decodeB64(url.substringAfter(";base64,", "")), mime = "image/*")
+            url != null && url.startsWith("http") -> UpstreamResult(kind = MediaKind.IMAGE, mediaUrl = url, mime = "image/*")
+            else -> throw TapcreatorException("Agnes 未返回可下载图片", "UPSTREAM_EMPTY")
+        }
+    }
+
+    /** Agnes generations 请求体（纯函数，供单测校验参考图落在 extra_body.image 而非顶层 image）。 */
+    internal fun buildAgnesImageBody(modelName: String, prompt: String, res: String, imageRefs: List<String>): JsonObject =
+        buildJsonObject {
+            put("model", modelName)
+            put("prompt", prompt)
+            put("size", res)
+            put("extra_body", buildJsonObject {
+                put("image", buildJsonArray { imageRefs.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
+                put("response_format", "b64_json")
+            })
+        }
 
     /**
      * 商汤官方平台图生图：POST /v1/images/edits（官方文档），image=纯 base64，model=sensenova-u1.5-lite 等。

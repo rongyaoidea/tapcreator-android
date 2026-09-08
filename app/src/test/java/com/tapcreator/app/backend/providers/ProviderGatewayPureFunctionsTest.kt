@@ -2,6 +2,9 @@ package com.tapcreator.app.backend.providers
 
 import com.tapcreator.app.data.model.MediaKind
 import com.tapcreator.app.data.model.ModelOption
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -236,5 +239,20 @@ class ProviderGatewayPureFunctionsTest {
         assertEquals("last_frame", gateway.h3ImageRoleFor(1, true))
         assertEquals("reference_image", gateway.h3ImageRoleFor(0, false))
         assertEquals("reference_image", gateway.h3ImageRoleFor(5, false))
+    }
+
+    @Test
+    fun `agnes body puts reference under extra_body image not top level`() {
+        val body = gateway.buildAgnesImageBody(
+            "agnes-image-2.1-flash", "make it night", "1024x1024",
+            listOf("data:image/jpeg;base64,AAA", "data:image/png;base64,BBB"),
+        ).jsonObject
+        assertNull("顶层不应有 image 字段", body["image"])
+        val eb = body["extra_body"]!!.jsonObject
+        val imgs = eb["image"]!!.jsonArray
+        assertEquals(2, imgs.size)
+        assertEquals("data:image/jpeg;base64,AAA", imgs[0].jsonPrimitive.content)
+        assertEquals("b64_json", eb["response_format"]!!.jsonPrimitive.content)
+        assertEquals("1024x1024", body["size"]!!.jsonPrimitive.content)
     }
 }
