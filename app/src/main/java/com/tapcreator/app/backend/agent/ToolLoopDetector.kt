@@ -41,7 +41,8 @@ data class ToolLoopConfig(
 }
 
 /**
- * 死循环检测器：滑动窗口识别工具调用空转，零 org.json/Android 依赖以跑纯 JVM 单测。
+ * 死循环检测器：滑动窗口识别工具调用空转。设计衍生自 OpenMinis 的同名组件（GPL-3.0），
+ * 重写为零 org.json/Android 依赖以跑纯 JVM 单测；见仓库根 NOTICE.md。
  * 策略（优先级高→低）：unknown_tool_repeat / global_circuit_breaker / poll_no_progress / generic_repeat。
  * 一次 run 一个实例，单线程派发，无需线程安全。
  */

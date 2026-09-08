@@ -100,6 +100,16 @@ Tapcreator is an Android autonomous AI creation app. It features a built-in auto
 
 ## License
 
-Non-Commercial Use Only. See [LICENSE](LICENSE) for details.
+Copyright (C) 2026 Tapcreator contributors.
+
+This program is free software: you can redistribute it and/or modify it under the terms
+of the **GNU General Public License as published by the Free Software Foundation, either
+version 3 of the License (GPL-3.0)**, or (at your option) any later version. See
+[LICENSE](LICENSE) for the full text.
+
+This project is derived from / bundles third-party components (OpenMinis under GPL-3.0;
+proot under GPL-2.0; talloc under LGPL-3.0; Alpine minirootfs aggregates) — see
+[NOTICE](NOTICE.md) for attribution and license details. Corresponding Source must be
+provided under GPL-3.0 when redistributing.
 
 Commercial use requires prior written authorization.
