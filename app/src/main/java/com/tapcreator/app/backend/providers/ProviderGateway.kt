@@ -107,6 +107,18 @@ class ProviderGateway @Inject constructor(
         firstIdentityRefs: IdentityRefs?,
         referenceAudioUrl: String?,
     ): UpstreamResult {
+        val imgs = firstIdentityRefs?.images.orEmpty()
+        val vids = firstIdentityRefs?.videos.orEmpty()
+        // 图生视频首帧模式（对齐 MiniMax 官方语义，参考同栈画布项目实现）：
+        //  仅当「有 1~2 张图，且无续写视频 / 无音色参考 / 无身份视频」时，第一张作 first_frame、
+        //  第二张作 last_frame，并强制 ratio=adaptive（用首帧自身宽高比）。首帧是独立模式，不能与
+        //  普通身份参考/音频/续写混用——否则退化成全部 reference_image（原「参考图不生效」的根因）。
+        val frameMode = h3FrameMode(
+            imageCount = imgs.size,
+            hasIdentityVideos = vids.isNotEmpty(),
+            hasReferenceVideo = referenceVideoUrl != null,
+            hasReferenceAudio = referenceAudioUrl != null,
+        )
         val content = buildJsonArray {
             add(
                 buildJsonObject {
@@ -114,8 +126,8 @@ class ProviderGateway @Inject constructor(
                     put("text", prefs.prompt)
                 }
             )
-            firstIdentityRefs?.images?.forEach { f ->
-                add(identityFilePart(f, "image_url"))
+            imgs.forEachIndexed { i, f ->
+                add(identityFilePart(f, "image_url", h3ImageRoleFor(i, frameMode)))
             }
             if (referenceVideoUrl != null) {
                 add(
@@ -126,8 +138,8 @@ class ProviderGateway @Inject constructor(
                     }
                 )
             }
-            firstIdentityRefs?.videos?.forEach { f ->
-                add(identityFilePart(f, "video_url"))
+            vids.forEach { f ->
+                add(identityFilePart(f, "video_url", "reference_video"))
             }
             if (referenceAudioUrl != null) {
                 add(
@@ -144,7 +156,7 @@ class ProviderGateway @Inject constructor(
             put("content", content)
             put("resolution", normalizeResolution(model, MediaKind.VIDEO, prefs.resolution, prefs.ratio, prefs.quality) ?: if (prefs.quality == "high") "2K" else "768P")
             put("duration", (prefs.seconds ?: 5).coerceIn(4, 15))
-            put("ratio", h3Ratio(prefs.ratio))
+            put("ratio", if (frameMode) "adaptive" else h3Ratio(prefs.ratio))
         }
         val createResp = execute(channel, secrets, "/v2/video_generation", body)
         val taskId = createResp["task_id"]?.jsonPrimitive?.content
@@ -184,10 +196,29 @@ class ProviderGateway @Inject constructor(
     private fun h3Ratio(ratio: String?): String =
         ratio?.takeIf { it in setOf("21:9", "16:9", "4:3", "1:1", "3:4", "9:16") } ?: "16:9"
 
+    /**
+     * H3 是否进入「图生视频首帧模式」：有 1~2 张参考图，且无身份视频、无续写视频、无音色参考。
+     * 首帧是 MiniMax 的独立模式，不能与普通身份/音频/续写参考混用，否则首帧会被降级为弱参考而「不生效」。
+     */
+    internal fun h3FrameMode(
+        imageCount: Int,
+        hasIdentityVideos: Boolean,
+        hasReferenceVideo: Boolean,
+        hasReferenceAudio: Boolean,
+    ): Boolean = imageCount in 1..2 && !hasIdentityVideos && !hasReferenceVideo && !hasReferenceAudio
+
+    /** 首帧模式下：第一张=first_frame、第二张=last_frame；否则一律 reference_image（身份/多模态参考）。 */
+    internal fun h3ImageRoleFor(index: Int, frameMode: Boolean): String = when {
+        !frameMode -> "reference_image"
+        index == 0 -> "first_frame"
+        else -> "last_frame"
+    }
+
     /** 把本地参考文件（base64 data URI）构造成 MiniMax H3 多模态 content 片段。
-     *  MiniMax 规范的引用 part：type 只用 text/image_url/video_url/audio_url（不识别 image_file/video_file，
-     *  否则上游报「2013 content.type 不支持」），url 嵌套在同名对象内，role=reference_image/reference_video。 */
-    private fun identityFilePart(f: IdentityFile, type: String): kotlinx.serialization.json.JsonObject {
+     *  MiniMax 规范：type 只用 image_url/video_url（不识别 image_file/video_file，否则上游报
+     *  「2013 content.type 不支持」），url 嵌套在同名对象内，role 由调用方决定——
+     *  first_frame/last_frame（图生视频首/尾帧）或 reference_image/reference_video（身份/多模态参考）。 */
+    private fun identityFilePart(f: IdentityFile, type: String, role: String): kotlinx.serialization.json.JsonObject {
         val isVideo = type == "video_url"
         return buildJsonObject {
             put("type", type)
@@ -196,7 +227,7 @@ class ProviderGateway @Inject constructor(
             } else {
                 put("image_url", buildJsonObject { put("url", f.dataUri); put("file_type", f.mime) })
             }
-            put("role", if (isVideo) "reference_video" else "reference_image")
+            put("role", role)
         }
     }
 
@@ -231,7 +262,12 @@ class ProviderGateway @Inject constructor(
                 ?: prefs.resolution?.takeIf { !it.contains('x') }
                 ?: prefs.ratio?.let(::ratioToSize)
             res?.let { put("resolution", it) }
-            if (continueFrame != null) put("image", java.util.Base64.getEncoder().encodeToString(continueFrame))
+            // 首帧：优先上一段尾帧（分段续写），否则用户直接上传的第一张参考图（图生视频）
+            val firstFrameB64 = continueFrame?.let { java.util.Base64.getEncoder().encodeToString(it) }
+                ?: prefs.referenceImages.firstOrNull()?.let { ref ->
+                    if (ref.startsWith("data:")) ref.substringAfter(";base64,", "").takeIf { it.isNotEmpty() } else ref
+                }
+            if (firstFrameB64 != null) put("image", firstFrameB64)
         }
         val resp = execute(channel, secrets, "/videos/generations", body)
         val data = resp.jsonObject["data"]?.jsonArray ?: throw TapcreatorException("上游未返回视频", "UPSTREAM_EMPTY")

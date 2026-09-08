@@ -208,4 +208,33 @@ class ProviderGatewayPureFunctionsTest {
         val result = gateway.normalizeResolution(model, MediaKind.VIDEO, null, null, "low")
         assertEquals("720P", result)
     }
+
+    // ============ H3 图生视频首帧模式（参考图能否生效的关键） ============
+
+    @Test
+    fun `h3FrameMode true for 1-2 images with no other refs`() {
+        assertTrue(gateway.h3FrameMode(1, false, false, false))
+        assertTrue(gateway.h3FrameMode(2, false, false, false))
+    }
+
+    @Test
+    fun `h3FrameMode false for 0 or 3+ images`() {
+        assertEquals(false, gateway.h3FrameMode(0, false, false, false))
+        assertEquals(false, gateway.h3FrameMode(3, false, false, false))
+    }
+
+    @Test
+    fun `h3FrameMode disabled by identity video or continuation video or audio`() {
+        assertEquals(false, gateway.h3FrameMode(1, true, false, false))
+        assertEquals(false, gateway.h3FrameMode(1, false, true, false))
+        assertEquals(false, gateway.h3FrameMode(1, false, false, true))
+    }
+
+    @Test
+    fun `h3 roles are first-frame last-frame in frame mode else reference`() {
+        assertEquals("first_frame", gateway.h3ImageRoleFor(0, true))
+        assertEquals("last_frame", gateway.h3ImageRoleFor(1, true))
+        assertEquals("reference_image", gateway.h3ImageRoleFor(0, false))
+        assertEquals("reference_image", gateway.h3ImageRoleFor(5, false))
+    }
 }
