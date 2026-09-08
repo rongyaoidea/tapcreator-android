@@ -121,6 +121,9 @@ class MCPManager @Inject constructor(
     /** 每个 server 是否已完成 MCP initialize 握手（官方 spec：tools 相关调用前须先 initialize + notifications/initialized）。 */
     private val initialized = ConcurrentHashMap<String, Boolean>()
 
+    /** streamable-HTTP 有状态会话：服务端在 initialize 响应头 Mcp-Session-Id 下发，后续请求须回传。 */
+    private val sessions = ConcurrentHashMap<String, String>()
+
     companion object {
         /** MCP 协议版本（2024-11-05 兼容性最广；官方后续版本 server 一般会回落）。 */
         const val PROTOCOL_VERSION = "2024-11-05"
@@ -159,6 +162,7 @@ class MCPManager @Inject constructor(
         val removed = servers.remove(name) != null
         if (removed) {
             closeProcess(name)
+            sessions.remove(name)
             persist()
         }
         return removed
@@ -348,17 +352,22 @@ class MCPManager @Inject constructor(
     /** 发送一条 JSON-RPC 并返回解析后的响应；兼容官方 streamable-HTTP 的 SSE(text/event-stream) 响应帧。 */
     private suspend fun httpRequest(server: MCPServer, body: JsonObject): JsonObject =
         withContext(Dispatchers.IO) {
+            val isInit = body["method"]?.jsonPrimitive?.content == "initialize"
             val url = java.net.URL("${server.url}/mcp")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("Accept", "application/json, text/event-stream")
+            // streamable-HTTP 有状态会话：除 initialize 外须回传服务端下发的 Mcp-Session-Id
+            if (!isInit) sessions[server.name]?.let { conn.setRequestProperty("Mcp-Session-Id", it) }
             conn.doOutput = true
             server.env.forEach { (k, v) -> conn.setRequestProperty(k, v) }
             conn.connectTimeout = 15_000
             conn.readTimeout = 30_000
             conn.outputStream.write(body.toString().toByteArray())
             conn.outputStream.flush()
+            // initialize 时捕获服务端下发的会话 id，供后续请求回传
+            if (isInit) conn.getHeaderField("Mcp-Session-Id")?.takeIf { it.isNotBlank() }?.let { sessions[server.name] = it }
             val ct = conn.contentType.orEmpty()
             val raw = conn.inputStream.bufferedReader().readText()
             val payload = if (ct.contains("text/event-stream") || raw.trimStart().startsWith("event:") || raw.contains("data:")) {
@@ -369,8 +378,7 @@ class MCPManager @Inject constructor(
             json.parseToJsonElement(payload).jsonObject
         }
 
-    /** HTTP 传输的 MCP 握手（每个 server 一次）。失败不阻断，尽量直连标准方法。
-     *  注：未实现 streamable-HTTP 的 Mcp-Session-Id 会话头回传，有状态 server 可能需后续补。 */
+    /** HTTP 传输的 MCP 握手（每个 server 一次）。失败不阻断，尽量直连标准方法。 */
     private suspend fun ensureInitializedHttp(server: MCPServer) {
         if (initialized[server.name] == true) return
         val initReq = buildJsonObject {
