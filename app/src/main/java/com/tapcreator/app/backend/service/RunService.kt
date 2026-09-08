@@ -555,6 +555,9 @@ class RunService @Inject constructor(
         const val MAX_REF_VIDEO_BYTES = 15L * 1024 * 1024
         /** 音频参考最大字节数：5MB 足够音色参考，避免请求体爆炸 */
         const val MAX_REF_AUDIO_BYTES = 5L * 1024 * 1024
+        /** 参考视频/音频时长上限（秒）：MiniMax H3 Ref2VA 要求每段≤15s 且合计≤15s，超限拒绝 */
+        const val MAX_REF_VIDEO_SECONDS = 15
+        const val MAX_REF_AUDIO_SECONDS = 15
         /** 参考图缩放最长边：足以支撑多模态识图/身份锚点，且把单张体积压到 ~200KB */
         const val REF_IMAGE_MAX_SIDE = 1536
         const val REF_IMAGE_JPEG_QUALITY = 85
@@ -662,6 +665,12 @@ class RunService @Inject constructor(
                 android.util.Log.w("RunService", "resolveReferences: 视频参考超限已跳过 path=$path size=${f.length()}")
                 return
             }
+            // 时长 ≤15s（H3 Ref2VA 官方限制：每段≤15s、合计≤15s）；无法读取时长则放行避免误杀
+            val durMs = mediaDurationMs(path)
+            if (durMs != null && durMs > MAX_REF_VIDEO_SECONDS * 1000L) {
+                android.util.Log.w("RunService", "resolveReferences: 视频参考时长超限已跳过 path=$path dur=${durMs}ms")
+                return
+            }
             runCatching {
                 val bytes = f.readBytes()
                 videoFiles += com.tapcreator.app.backend.providers.IdentityFile(
@@ -678,9 +687,18 @@ class RunService @Inject constructor(
                 android.util.Log.w("RunService", "resolveReferences: 音频参考超限已跳过 path=$path size=${f.length()}")
                 return
             }
+            // 时长 ≤15s（H3 Ref2VA：每段≤15s、合计≤15s）
+            val durMs = mediaDurationMs(path)
+            if (durMs != null && durMs > MAX_REF_AUDIO_SECONDS * 1000L) {
+                android.util.Log.w("RunService", "resolveReferences: 音频参考时长超限已跳过 path=$path dur=${durMs}ms")
+                return
+            }
             runCatching {
                 val b64 = java.util.Base64.getEncoder().encodeToString(f.readBytes())
-                audio = "data:audio/mpeg;base64,$b64"
+                // 按扩展名给对 mime（wav→audio/wav，其余→audio/mpeg），避免 wav 被标成 mpeg 导致上游拒收
+                val ext = path.substringAfterLast('.', "").lowercase()
+                val mime = if (ext == "wav") "audio/wav" else "audio/mpeg"
+                audio = "data:$mime;base64,$b64"
             }
         }
 
@@ -705,6 +723,17 @@ class RunService @Inject constructor(
             }
         }
         return ResolvedRefs(texts, images, audio, imageFiles, videoFiles)
+    }
+
+    /** 读取本地媒体时长（毫秒）；失败返回 null（调用方放行，避免误杀无法读取的文件）。 */
+    private fun mediaDurationMs(path: String): Long? = try {
+        val retriever = android.media.MediaMetadataRetriever()
+        retriever.setDataSource(path)
+        val ms = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+        retriever.release()
+        ms
+    } catch (_: Throwable) {
+        null
     }
 
     /**

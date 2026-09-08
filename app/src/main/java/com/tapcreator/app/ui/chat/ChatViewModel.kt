@@ -817,13 +817,24 @@ class ChatViewModel @Inject constructor(
                         .mapNotNull { l -> runCatching { db.cardDao().byId(l.fromCardId) }.getOrNull() }
                 }.getOrDefault(emptyList())
                 val have = lastRequestBase!!.referencedAssetIds.toSet()
+                // 与同步路径一致：连线卡也须过 类型矩阵 + 文件存在 校验（避免加入文件已缺失的参考导致后端报错）
                 val extra = linkedSrc
-                    .filter { it.id !in have && canServeAsReference(it.kind, selectedKind) }
+                    .filter { it.id !in have && canServeAsReference(it.kind, selectedKind) && refFileOk(it.mediaPath, it.previewPath) }
                     .map { it.id }.distinct()
                 if (extra.isNotEmpty()) {
-                    lastRequestBase = lastRequestBase!!.copy(
-                        referencedAssetIds = lastRequestBase!!.referencedAssetIds + extra,
-                    )
+                    val merged = (lastRequestBase!!.referencedAssetIds + extra).distinct()
+                    // 预取 id→kind，避免把 suspend 查询塞进 count/filter 的普通 lambda
+                    val kindOf = merged.associateWith { id ->
+                        runCatching { db.cardDao().byId(id)?.kind }.getOrNull()
+                    }
+                    // 图片参考总数不超 MAX_REF_ASSETS：从尾部（后加的连线卡优先砍）削到上限
+                    var over = merged.count { kindOf[it] == MediaKind.IMAGE } - MAX_REF_ASSETS
+                    val capped = if (over > 0) {
+                        merged.filter { id ->
+                            if (kindOf[id] == MediaKind.IMAGE && over > 0) { over--; false } else true
+                        }
+                    } else merged
+                    lastRequestBase = lastRequestBase!!.copy(referencedAssetIds = capped)
                 }
             }
             val r2 = lastRequestBase!!

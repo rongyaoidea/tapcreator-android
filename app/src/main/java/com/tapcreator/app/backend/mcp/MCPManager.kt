@@ -233,22 +233,34 @@ class MCPManager @Inject constructor(
         initialized.remove(name)
     }
 
-    /** 读取一条 newline-delimited JSON-RPC 响应（进程复用模式下不能 readText() 等 EOF） */
-    private fun readResponseLine(serverName: String, timeoutMs: Long = 30_000L): String? {
+    /**
+     * 读取 newline-delimited JSON-RPC 响应，**按 request id 匹配**（进程复用、且一次超时可能留下迟到响应，
+     * 若只看"第一条 result/error"会把上一条的迟到响应误挂到本次调用）。支持单行与跨行 JSON。
+     */
+    private fun readResponseLine(serverName: String, wantId: Int, timeoutMs: Long = 30_000L): JsonObject? {
         val reader = stdioReaders[serverName] ?: return null
-        var deadline = System.currentTimeMillis() + timeoutMs
+        val deadline = System.currentTimeMillis() + timeoutMs
         val sb = StringBuilder()
         while (System.currentTimeMillis() < deadline) {
             if (reader.ready()) {
                 val line = reader.readLine() ?: return null
-                if (line.isNotBlank()) {
-                    sb.append(line)
-                    // JSON-RPC 也可能跨行：累计到能解析出完整 result/error 为止
-                    val candidate = sb.toString()
-                    val parsed = runCatching { json.parseToJsonElement(candidate).jsonObject }.getOrNull()
-                    if (parsed != null && (parsed.containsKey("result") || parsed.containsKey("error"))) {
-                        return candidate
-                    }
+                if (line.isBlank()) continue
+                // 先按完整单行解析（stdio 常见形态）
+                val single = runCatching { json.parseToJsonElement(line).jsonObject }.getOrNull()
+                if (single != null) {
+                    if (single["id"]?.jsonPrimitive?.content?.toIntOrNull() == wantId &&
+                        (single.containsKey("result") || single.containsKey("error"))
+                    ) return single
+                    continue // 其它 id / 通知 / 日志行：丢弃
+                }
+                // 跨行 JSON：累积后再试
+                sb.append(line).append('\n')
+                val acc = runCatching { json.parseToJsonElement(sb.toString()).jsonObject }.getOrNull()
+                if (acc != null) {
+                    sb.setLength(0)
+                    if (acc["id"]?.jsonPrimitive?.content?.toIntOrNull() == wantId &&
+                        (acc.containsKey("result") || acc.containsKey("error"))
+                    ) return acc
                 }
             } else {
                 Thread.sleep(25)
@@ -260,9 +272,10 @@ class MCPManager @Inject constructor(
     /** MCP 官方握手：initialize（阻塞取回 result）→ notifications/initialized（通知）。每个进程只做一次。 */
     private fun ensureInitializedStdio(serverName: String, proc: Process) {
         if (initialized[serverName] == true) return
+        val initId = requestId.incrementAndGet()
         val initReq = buildJsonObject {
             put("jsonrpc", "2.0")
-            put("id", requestId.incrementAndGet())
+            put("id", initId)
             put("method", "initialize")
             put("params", buildJsonObject {
                 put("protocolVersion", PROTOCOL_VERSION)
@@ -272,8 +285,7 @@ class MCPManager @Inject constructor(
         }
         proc.outputStream.write((initReq.toString() + "\n").toByteArray())
         proc.outputStream.flush()
-        val resp = readResponseLine(serverName)
-        val root = resp?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() }
+        val root = readResponseLine(serverName, initId)
         if (root == null || root.containsKey("error")) {
             // 非标准/简易 server：不阻断，后续仍直连 tools/list|tools/call
             android.util.Log.w("MCPManager", "MCP initialize 未成功（$serverName），尝试直连标准方法")
@@ -290,16 +302,16 @@ class MCPManager @Inject constructor(
     private suspend fun listToolsStdio(server: MCPServer): List<MCPTool> = withContext(Dispatchers.IO) {
         val proc = getOrCreateProcess(server)
         ensureInitializedStdio(server.name, proc)
+        val id = requestId.incrementAndGet()
         val req = buildJsonObject {
             put("jsonrpc", "2.0")
-            put("id", requestId.incrementAndGet())
+            put("id", id)
             put("method", "tools/list")
         }
         proc.outputStream.write((req.toString() + "\n").toByteArray())
         proc.outputStream.flush()
         // 不关闭 outputStream 以复用进程
-        val resp = readResponseLine(server.name) ?: return@withContext emptyList()
-        val root = json.parseToJsonElement(resp).jsonObject
+        val root = readResponseLine(server.name, id) ?: return@withContext emptyList()
         val result = root["result"]?.jsonObject
         val tools = result?.get("tools")?.jsonArray ?: return@withContext emptyList()
         tools.mapNotNull { el ->
@@ -318,9 +330,10 @@ class MCPManager @Inject constructor(
         withContext(Dispatchers.IO) {
             val proc = getOrCreateProcess(server)
             ensureInitializedStdio(server.name, proc)
+            val id = requestId.incrementAndGet()
             val req = buildJsonObject {
                 put("jsonrpc", "2.0")
-                put("id", requestId.incrementAndGet())
+                put("id", id)
                 put("method", "tools/call")
                 put("params", buildJsonObject {
                     put("name", toolName)
@@ -330,8 +343,7 @@ class MCPManager @Inject constructor(
             proc.outputStream.write((req.toString() + "\n").toByteArray())
             proc.outputStream.flush()
             // 不关闭 outputStream 以复用进程
-            val resp = readResponseLine(server.name) ?: return@withContext "（MCP 响应超时或无响应）"
-            val root = json.parseToJsonElement(resp).jsonObject
+            val root = readResponseLine(server.name, id) ?: return@withContext "（MCP 响应超时或无响应）"
             root["error"]?.let { return@withContext "（MCP 错误：${it}）" }
             val result = root["result"]?.jsonObject
             val isError = result?.get("isError")?.jsonPrimitive?.content?.toBoolean() == true

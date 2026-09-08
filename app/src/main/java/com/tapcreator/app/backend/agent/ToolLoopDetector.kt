@@ -78,30 +78,13 @@ class ToolLoopDetector(private val config: ToolLoopConfig = ToolLoopConfig()) {
             )
         }
 
-        if (isPollTool(toolName)) {
-            if (noProgressStreak >= config.criticalThreshold) {
-                return LoopCheckResult(
-                    LoopLevel.CRITICAL,
-                    "[LOOP BLOCKED] CRITICAL：$toolName 连续 $noProgressStreak 次返回相同无进展结果。执行被拦截：加大等待或判定失败后 finish。",
-                )
-            }
-            if (noProgressStreak >= config.warningThreshold) {
-                return LoopCheckResult(
-                    LoopLevel.WARNING,
-                    "[LOOP WARNING] 你已用相同参数调用 $toolName $noProgressStreak 次且无进展。停止轮询：加大等待或判定失败后 finish。",
-                    "poll:$toolName:$argsHash",
-                )
-            }
-        } else {
-            val totalCount = history.count { it.toolName == toolName && it.argsHash == argsHash }
-            if (totalCount >= config.warningThreshold) {
-                return LoopCheckResult(
-                    LoopLevel.WARNING,
-                    "[LOOP WARNING] 你已用相同参数调用 $toolName $totalCount 次。若没推进任务，停止重试并报告失败或 finish。",
-                    "repeat:$toolName:$argsHash",
-                )
-            }
+        if (isPollTool(toolName) && noProgressStreak >= config.criticalThreshold) {
+            return LoopCheckResult(
+                LoopLevel.CRITICAL,
+                "[LOOP BLOCKED] CRITICAL：$toolName 连续 $noProgressStreak 次返回相同无进展结果。执行被拦截：加大等待或判定失败后 finish。",
+            )
         }
+        // 执行前只产出 CRITICAL（硬拦）；WARNING 由执行后的 record() 回灌，避免 check() 死分支
         return LoopCheckResult.NONE
     }
 

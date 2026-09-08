@@ -513,6 +513,7 @@ class PRootSandbox @Inject constructor(
             val sb = StringBuilder()
             val started = System.currentTimeMillis()
             val stdout = proc.inputStream
+            var truncated = false
             try {
                 while (System.currentTimeMillis() - started < timeoutMs) {
                     // available() 轮询而非阻塞 read()：命令长时间无输出（如静默编译）时，
@@ -524,8 +525,11 @@ class PRootSandbox @Inject constructor(
                     val b = stdout.read()
                     if (b < 0) break
                     sb.append(b.toChar())
-                    // 防 OOM：输出超 1MB 即止（走下方重置）
-                    if (sb.length > MAX_OUTPUT_BYTES) break
+                    // 防 OOM：输出超 1MB 即止
+                    if (sb.length > MAX_OUTPUT_BYTES) {
+                        truncated = true
+                        break
+                    }
                     // 检测 marker 行
                     val markerIdx = sb.indexOf("$marker:")
                     if (markerIdx >= 0) {
@@ -538,11 +542,31 @@ class PRootSandbox @Inject constructor(
                         return@withContext ShellResult(output, exitCode)
                     }
                 }
-                // 走到这里 = 超时 / 输出超限 / EOF：命令可能仍挂在共享 shell 上，
-                // 其残余输出会污染下一条命令的 marker 切分。重置 shell 让下一条命令干净起跑。
+                // 输出超限但命令可能已正常结束：限时补读找 marker（命中则正常返回，避免误重启杀进程）
+                if (truncated) {
+                    val drainDeadline = System.currentTimeMillis() + 2000L
+                    while (System.currentTimeMillis() < drainDeadline) {
+                        if (stdout.available() <= 0) {
+                            delay(10L)
+                            continue
+                        }
+                        val b = stdout.read()
+                        if (b < 0) break
+                        sb.append(b.toChar())
+                        val markerIdx = sb.indexOf("$marker:")
+                        if (markerIdx >= 0) {
+                            val afterMarker = sb.substring(markerIdx + marker.length + 1)
+                            val exitCode = afterMarker.substringBefore('\n').trim().toIntOrNull() ?: -1
+                            val output = sb.substring(0, markerIdx)
+                            return@withContext ShellResult(output.take(MAX_OUTPUT_BYTES), exitCode)
+                        }
+                    }
+                }
+                // 仍无 marker = 命令还挂在 shell / 超时 / 进程退出：其残余输出会污染下一条命令的
+                // marker 切分，重置 shell 让下一条命令干净起跑（避免误重启的场景已在上面 drain 处理）。
                 val partial = if (sb.endsWith('\n')) sb.substring(0, sb.length - 1) else sb.toString()
                 runCatching { restartShellBlocking() }
-                ShellResult(partial + "\n[命令超时或输出超限，已重置沙箱 shell；上述输出可能不完整]", -1)
+                ShellResult(partial.take(MAX_OUTPUT_BYTES) + "\n[命令超时或输出超限，已重置沙箱 shell；上述输出可能不完整]", -1)
             } catch (e: Exception) {
                 runCatching { restartShellBlocking() }
                 ShellResult("沙箱执行异常：${e.message}", -1)
