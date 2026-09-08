@@ -118,6 +118,16 @@ class MCPManager @Inject constructor(
     /** stdio 进程 stdout reader（每个进程只建一个 BufferedReader，避免跨调用读缓冲丢失数据） */
     private val stdioReaders = ConcurrentHashMap<String, java.io.BufferedReader>()
 
+    /** 每个 server 是否已完成 MCP initialize 握手（官方 spec：tools 相关调用前须先 initialize + notifications/initialized）。 */
+    private val initialized = ConcurrentHashMap<String, Boolean>()
+
+    companion object {
+        /** MCP 协议版本（2024-11-05 兼容性最广；官方后续版本 server 一般会回落）。 */
+        const val PROTOCOL_VERSION = "2024-11-05"
+        const val CLIENT_NAME = "tapcreator"
+        const val CLIENT_VERSION = "1.0"
+    }
+
     /** 初始化：从 DataStore 恢复已注册的 MCP 服务器列表 */
     suspend fun init() {
         val raw = settings.mcpServersJson()
@@ -208,6 +218,7 @@ class MCPManager @Inject constructor(
         val newProc = startProcess(server)
         stdioProcesses[server.name] = newProc
         stdioReaders[server.name] = newProc.inputStream.bufferedReader()
+        initialized.remove(server.name) // 新进程需重新 initialize 握手
         newProc
     }
 
@@ -215,6 +226,7 @@ class MCPManager @Inject constructor(
     private fun closeProcess(name: String) {
         runCatching { stdioProcesses.remove(name)?.destroy() }
         runCatching { stdioReaders.remove(name)?.close() }
+        initialized.remove(name)
     }
 
     /** 读取一条 newline-delimited JSON-RPC 响应（进程复用模式下不能 readText() 等 EOF） */
@@ -241,12 +253,43 @@ class MCPManager @Inject constructor(
         return null // 超时
     }
 
+    /** MCP 官方握手：initialize（阻塞取回 result）→ notifications/initialized（通知）。每个进程只做一次。 */
+    private fun ensureInitializedStdio(serverName: String, proc: Process) {
+        if (initialized[serverName] == true) return
+        val initReq = buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("id", requestId.incrementAndGet())
+            put("method", "initialize")
+            put("params", buildJsonObject {
+                put("protocolVersion", PROTOCOL_VERSION)
+                put("capabilities", buildJsonObject { })
+                put("clientInfo", buildJsonObject { put("name", CLIENT_NAME); put("version", CLIENT_VERSION) })
+            })
+        }
+        proc.outputStream.write((initReq.toString() + "\n").toByteArray())
+        proc.outputStream.flush()
+        val resp = readResponseLine(serverName)
+        val root = resp?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() }
+        if (root == null || root.containsKey("error")) {
+            // 非标准/简易 server：不阻断，后续仍直连 tools/list|tools/call
+            android.util.Log.w("MCPManager", "MCP initialize 未成功（$serverName），尝试直连标准方法")
+            return
+        }
+        val notif = buildJsonObject { put("jsonrpc", "2.0"); put("method", "notifications/initialized") }
+        runCatching {
+            proc.outputStream.write((notif.toString() + "\n").toByteArray())
+            proc.outputStream.flush()
+        }
+        initialized[serverName] = true
+    }
+
     private suspend fun listToolsStdio(server: MCPServer): List<MCPTool> = withContext(Dispatchers.IO) {
         val proc = getOrCreateProcess(server)
+        ensureInitializedStdio(server.name, proc)
         val req = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", requestId.incrementAndGet())
-            put("method", "list_tools")
+            put("method", "tools/list")
         }
         proc.outputStream.write((req.toString() + "\n").toByteArray())
         proc.outputStream.flush()
@@ -270,10 +313,11 @@ class MCPManager @Inject constructor(
     private suspend fun callToolStdio(server: MCPServer, toolName: String, arguments: JsonObject): String =
         withContext(Dispatchers.IO) {
             val proc = getOrCreateProcess(server)
+            ensureInitializedStdio(server.name, proc)
             val req = buildJsonObject {
                 put("jsonrpc", "2.0")
                 put("id", requestId.incrementAndGet())
-                put("method", "call_tool")
+                put("method", "tools/call")
                 put("params", buildJsonObject {
                     put("name", toolName)
                     put("arguments", arguments)
@@ -284,11 +328,12 @@ class MCPManager @Inject constructor(
             // 不关闭 outputStream 以复用进程
             val resp = readResponseLine(server.name) ?: return@withContext "（MCP 响应超时或无响应）"
             val root = json.parseToJsonElement(resp).jsonObject
+            root["error"]?.let { return@withContext "（MCP 错误：${it}）" }
             val result = root["result"]?.jsonObject
-            val content = result?.get("content")?.jsonArray
-            content?.joinToString("\n") { el ->
-                el.jsonObject["text"]?.jsonPrimitive?.content ?: ""
-            } ?: "（MCP 工具返回空结果）"
+            val isError = result?.get("isError")?.jsonPrimitive?.content?.toBoolean() == true
+            val text = result?.get("content")?.jsonArray
+                ?.joinToString("\n") { el -> el.jsonObject["text"]?.jsonPrimitive?.content ?: "" }
+            (if (isError) "（工具返回错误）" else "") + (text ?: "（MCP 工具返回空结果）")
         }
 
     /** 销毁所有 stdio 复用进程（用于清理/重置） */
@@ -300,29 +345,59 @@ class MCPManager @Inject constructor(
 
     // ==================== HTTP 实现 ====================
 
+    /** 发送一条 JSON-RPC 并返回解析后的响应；兼容官方 streamable-HTTP 的 SSE(text/event-stream) 响应帧。 */
     private suspend fun httpRequest(server: MCPServer, body: JsonObject): JsonObject =
         withContext(Dispatchers.IO) {
             val url = java.net.URL("${server.url}/mcp")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Accept", "application/json, text/event-stream")
             conn.doOutput = true
             server.env.forEach { (k, v) -> conn.setRequestProperty(k, v) }
             conn.connectTimeout = 15_000
             conn.readTimeout = 30_000
             conn.outputStream.write(body.toString().toByteArray())
             conn.outputStream.flush()
-            val resp = conn.inputStream.bufferedReader().readText()
-            json.parseToJsonElement(resp).jsonObject
+            val ct = conn.contentType.orEmpty()
+            val raw = conn.inputStream.bufferedReader().readText()
+            val payload = if (ct.contains("text/event-stream") || raw.trimStart().startsWith("event:") || raw.contains("data:")) {
+                raw.lineSequence().map { it.trim() }.filter { it.startsWith("data:") }
+                    .map { it.removePrefix("data:").trim() }
+                    .lastOrNull { it.isNotEmpty() && it != "[DONE]" } ?: raw
+            } else raw
+            json.parseToJsonElement(payload).jsonObject
         }
 
-    private suspend fun listToolsHttp(server: MCPServer): List<MCPTool> {
-        val req = buildJsonObject {
+    /** HTTP 传输的 MCP 握手（每个 server 一次）。失败不阻断，尽量直连标准方法。
+     *  注：未实现 streamable-HTTP 的 Mcp-Session-Id 会话头回传，有状态 server 可能需后续补。 */
+    private suspend fun ensureInitializedHttp(server: MCPServer) {
+        if (initialized[server.name] == true) return
+        val initReq = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", requestId.incrementAndGet())
-            put("method", "list_tools")
+            put("method", "initialize")
+            put("params", buildJsonObject {
+                put("protocolVersion", PROTOCOL_VERSION)
+                put("capabilities", buildJsonObject { })
+                put("clientInfo", buildJsonObject { put("name", CLIENT_NAME); put("version", CLIENT_VERSION) })
+            })
         }
+        runCatching { httpRequest(server, initReq) }
+            .onFailure { android.util.Log.w("MCPManager", "MCP(http) initialize 失败：${server.name} ${it.message}") }
+        val notif = buildJsonObject { put("jsonrpc", "2.0"); put("method", "notifications/initialized") }
+        runCatching { httpRequest(server, notif) } // 通知：部分 server 回 202 空体，忽略
+        initialized[server.name] = true
+    }
+
+    private suspend fun listToolsHttp(server: MCPServer): List<MCPTool> {
         return try {
+            ensureInitializedHttp(server)
+            val req = buildJsonObject {
+                put("jsonrpc", "2.0")
+                put("id", requestId.incrementAndGet())
+                put("method", "tools/list")
+            }
             val root = httpRequest(server, req)
             val result = root["result"]?.jsonObject
             val tools = result?.get("tools")?.jsonArray ?: return emptyList()
@@ -345,19 +420,21 @@ class MCPManager @Inject constructor(
         val req = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", requestId.incrementAndGet())
-            put("method", "call_tool")
+            put("method", "tools/call")
             put("params", buildJsonObject {
                 put("name", toolName)
                 put("arguments", arguments)
             })
         }
         try {
+            ensureInitializedHttp(server)
             val root = httpRequest(server, req)
+            root["error"]?.let { return "（MCP 错误：${it}）" }
             val result = root["result"]?.jsonObject
-            val content = result?.get("content")?.jsonArray
-            return content?.joinToString("\n") { el ->
-                el.jsonObject["text"]?.jsonPrimitive?.content ?: ""
-            } ?: "（MCP 工具返回空结果）"
+            val isError = result?.get("isError")?.jsonPrimitive?.content?.toBoolean() == true
+            val text = result?.get("content")?.jsonArray
+                ?.joinToString("\n") { el -> el.jsonObject["text"]?.jsonPrimitive?.content ?: "" }
+            return (if (isError) "（工具返回错误）" else "") + (text ?: "（MCP 工具返回空结果）")
         } catch (e: Exception) {
             throw TapcreatorException("MCP 调用失败：${e.message}", "MCP_CALL_FAILED")
         }
