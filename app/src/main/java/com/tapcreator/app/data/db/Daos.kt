@@ -357,31 +357,6 @@ interface TraceDao {
     suspend fun clearByConversation(conversationId: String)
 }
 
-/** 记录「一次 Agent 运行注入了哪些技能」，供用户反馈时精确归因赢率 */
-@Dao
-interface AgentRunSkillDao {
-    @Insert
-    suspend fun insertAll(entries: List<AgentRunSkillEntity>)
-
-    /** 最近一次尚未被反馈消费的 Agent 运行（其注入技能对应的批次） */
-    @Query("SELECT runId FROM agent_run_skills WHERE conversationId = :conversationId ORDER BY createdAt DESC, id DESC LIMIT 1")
-    suspend fun latestPendingRunId(conversationId: String): String?
-
-    @Query("SELECT skillId FROM agent_run_skills WHERE conversationId = :conversationId AND runId = :runId")
-    suspend fun skillsForRun(conversationId: String, runId: String): List<String>
-
-    @Query("DELETE FROM agent_run_skills WHERE conversationId = :conversationId AND runId = :runId")
-    suspend fun deleteForRun(conversationId: String, runId: String)
-
-    /**
-     * 清理某会话的悬空注入批次：仅删 createdAt 早于 [beforeMs] 的记录，
-     * 保留近期的、尚未被用户反馈消费的批次，避免同会话并发/误清。
-     * 超过有效期（默认 30 分钟）的批次视为已废弃，可安全清理。
-     */
-    @Query("DELETE FROM agent_run_skills WHERE conversationId = :conversationId AND createdAt < :beforeMs")
-    suspend fun clearForConversation(conversationId: String, beforeMs: Long)
-}
-
 @Dao
 interface ConversationStateDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)

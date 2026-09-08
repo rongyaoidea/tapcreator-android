@@ -198,16 +198,3 @@ data class ConversationStateEntity(
     val updatedAt: Long = 0L,
 )
 
-/**
- * Agent 运行 → 注入技能的关联：记录「某个 Agent 执行批次里注入了哪些已生效技能」。
- * 用途：用户对上一轮产出反馈（满意/重做）时，把赢率精确归因到这些技能，而不是由模型自评拍板。
- * 反馈被消费后即删除，避免重复统计。
- */
-@Entity(tableName = "agent_run_skills", indices = [Index(value = ["conversationId", "runId"])])
-data class AgentRunSkillEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
-    val conversationId: String,
-    val runId: String,
-    val skillId: String,
-    val createdAt: Long,
-)
