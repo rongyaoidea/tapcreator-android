@@ -807,6 +807,25 @@ class ChatViewModel @Inject constructor(
                     }
                     .onFailure { e -> toast("提示词优化失败，已使用原文：${e.message}") }
             }
+            // 「连线即参考」：把画布上连到本草稿卡的参考边（来源卡）并入生成输入。
+            // 此前生成只读提交面板勾选的 selectedReferenceCards，从不回读连线边——
+            // 于是「把卡片 A 连到下一张卡 B 作参考」对生成不生效。这里回读入边补齐。
+            if (hasExistingDraft) {
+                val linkedSrc = runCatching {
+                    db.cardLinkDao().incoming(draftIdForRunning)
+                        .filter { it.role == "reference" }
+                        .mapNotNull { l -> runCatching { db.cardDao().byId(l.fromCardId) }.getOrNull() }
+                }.getOrDefault(emptyList())
+                val have = lastRequestBase!!.referencedAssetIds.toSet()
+                val extra = linkedSrc
+                    .filter { it.id !in have && canServeAsReference(it.kind, selectedKind) }
+                    .map { it.id }.distinct()
+                if (extra.isNotEmpty()) {
+                    lastRequestBase = lastRequestBase!!.copy(
+                        referencedAssetIds = lastRequestBase!!.referencedAssetIds + extra,
+                    )
+                }
+            }
             val r2 = lastRequestBase!!
             var genFailed = false
             try {
