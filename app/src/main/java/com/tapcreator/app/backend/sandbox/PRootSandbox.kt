@@ -515,14 +515,17 @@ class PRootSandbox @Inject constructor(
             val stdout = proc.inputStream
             try {
                 while (System.currentTimeMillis() - started < timeoutMs) {
+                    // available() 轮询而非阻塞 read()：命令长时间无输出（如静默编译）时，
+                    // 阻塞 read() 会无视 timeoutMs 把 mutex 卡死，拖垮整个沙箱。
+                    if (stdout.available() <= 0) {
+                        delay(20L)
+                        continue
+                    }
                     val b = stdout.read()
                     if (b < 0) break
                     sb.append(b.toChar())
-                    // 防 OOM：输出超 1MB 时截断并终止
-                    if (sb.length > MAX_OUTPUT_BYTES) {
-                        // 截断并等待 marker 提前退出
-                        break
-                    }
+                    // 防 OOM：输出超 1MB 即止（走下方重置）
+                    if (sb.length > MAX_OUTPUT_BYTES) break
                     // 检测 marker 行
                     val markerIdx = sb.indexOf("$marker:")
                     if (markerIdx >= 0) {
@@ -535,11 +538,40 @@ class PRootSandbox @Inject constructor(
                         return@withContext ShellResult(output, exitCode)
                     }
                 }
-                ShellResult(sb.toString(), -1) // 超时或截断
+                // 走到这里 = 超时 / 输出超限 / EOF：命令可能仍挂在共享 shell 上，
+                // 其残余输出会污染下一条命令的 marker 切分。重置 shell 让下一条命令干净起跑。
+                val partial = if (sb.endsWith('\n')) sb.substring(0, sb.length - 1) else sb.toString()
+                runCatching { restartShellBlocking() }
+                ShellResult(partial + "\n[命令超时或输出超限，已重置沙箱 shell；上述输出可能不完整]", -1)
             } catch (e: Exception) {
+                runCatching { restartShellBlocking() }
                 ShellResult("沙箱执行异常：${e.message}", -1)
             }
         }
+    }
+
+    /**
+     * 重置常驻 shell（保留 rootfs，快速）：杀掉可能仍挂在 shell 上的在途命令，再重新拉起交互 shell。
+     * 供 [exec] 超时/超限/异常后恢复干净的命令流——否则残余输出会污染下一条命令的 marker 切分。
+     * 调用方必须已持有 mutex（本方法不自行加锁，避免与 exec 的 mutex 重入死锁）。
+     */
+    private fun restartShellBlocking() {
+        process?.let { proc ->
+            runCatching { proc.destroy() }
+            val deadline = System.currentTimeMillis() + 2000L
+            while (System.currentTimeMillis() < deadline && proc.isAlive) {
+                Thread.sleep(50L)
+            }
+            if (proc.isAlive) runCatching { proc.destroyForcibly() }
+        }
+        process = null
+        ready.set(false)
+        // startPRoot 复用已解压的 rootfs，重跑 init（含后台 apk add）并等待 shell 就绪标记，阻塞但有限时。
+        startPRoot()
+        if (process?.isAlive != true) {
+            throw TapcreatorException("沙箱 shell 重置失败，请点「重置沙箱」重试", "PROOT_RESTART_FAILED")
+        }
+        ready.set(true)
     }
 
     /**
