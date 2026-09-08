@@ -28,6 +28,7 @@ class SettingsStore(private val context: Context) {
         val searchApiKey = stringPreferencesKey("search_api_key")
         val searchApiUrl = stringPreferencesKey("search_api_url")
         val mcpServers = stringPreferencesKey("mcp_servers")
+        val modelImageRefOverrides = stringPreferencesKey("model_image_ref_overrides")
     }
 
     /** 默认渠道/模型是否已种子化（仅首次启动种子化一次，避免用户删除后重启又恢复） */
@@ -130,5 +131,13 @@ class SettingsStore(private val context: Context) {
 
     suspend fun saveMcpServersJson(json: String) {
         context.dataStore.edit { it[Keys.mcpServers] = json }
+    }
+
+    /** 图生图参考形态覆盖（modelId → ImageRefMode 名 的 JSON map）。空 = 用档案表默认。 */
+    suspend fun imageRefOverridesJson(): String =
+        context.dataStore.data.first()[Keys.modelImageRefOverrides] ?: ""
+
+    suspend fun saveImageRefOverridesJson(json: String) {
+        context.dataStore.edit { it[Keys.modelImageRefOverrides] = json }
     }
 }

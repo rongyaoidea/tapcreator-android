@@ -640,6 +640,33 @@ private fun ModelCard(info: ModelInfo, channelList: List<ChannelEntity>, vm: Set
                 Text("删除", color = MaterialTheme.colorScheme.error)
             }
         }
+        if (channel != null) {
+            var refMode by remember {
+                mutableStateOf(vm.modelImageRefMode(model.id, channel.baseUrl, model.name))
+            }
+            Text(
+                text = "参考形态：${refMode.label}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(top = 2.dp),
+            ) {
+                items(com.tapcreator.app.backend.providers.ImageRefMode.values().toList()) { mode ->
+                    FilterChip(
+                        selected = refMode == mode,
+                        onClick = { refMode = mode; vm.setModelImageRefMode(model.id, mode) },
+                        label = { Text(mode.name) },
+                    )
+                }
+            }
+            TextButton(onClick = {
+                vm.clearModelImageRefMode(model.id)
+                refMode = vm.modelImageRefMode(model.id, channel.baseUrl, model.name)
+            }) { Text("恢复默认", style = MaterialTheme.typography.labelMedium) }
+        }
     }
 
     if (channel != null && showEditDialog) {

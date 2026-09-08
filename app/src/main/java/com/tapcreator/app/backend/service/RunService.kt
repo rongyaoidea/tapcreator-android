@@ -298,9 +298,13 @@ class RunService @Inject constructor(
         // 音色参考：用户选中的音频（卡/素材）→ data URI，作为 H3 首段的 reference_audio，实现音画都衔接
         val referenceAudio = refs.audioUri
         // 身份参考：角色/产品的多视角图片+视频 → 作为 H3 首段的 video_file/image_file，固定人物/产品身份
+        // 参考数量上限由「视频档案」表驱动（ModelProfileCatalog）；未命中用默认（图 ≤9、视频 ≤3）
+        val vp = com.tapcreator.app.backend.providers.ModelProfileCatalog.videoProfile(channel.baseUrl, model.name)
+        val maxRefImgs = vp?.maxRefImages ?: 9
+        val maxRefVids = vp?.maxRefVideos ?: 3
         val identityRefs = com.tapcreator.app.backend.providers.IdentityRefs(
-            videos = refs.videoFiles.take(3),   // H3 Ref2VA：参考视频 ≤3（每段/合计 ≤15s、≤50MB）
-            images = refs.imageFiles.take(9),   // H3 Ref2VA：参考图 ≤9
+            videos = refs.videoFiles.take(maxRefVids),
+            images = refs.imageFiles.take(maxRefImgs),
         )
 
         val target = (pref.seconds ?: 5).coerceIn(1, 120)

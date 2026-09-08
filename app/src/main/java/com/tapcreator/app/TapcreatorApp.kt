@@ -33,6 +33,9 @@ class TapcreatorApp : Application() {
     @Inject
     lateinit var mcpManager: com.tapcreator.app.backend.mcp.MCPManager
 
+    @Inject
+    lateinit var settings: com.tapcreator.app.data.prefs.SettingsStore
+
     override fun onCreate() {
         super.onCreate()
         installCrashLogger()
@@ -47,6 +50,8 @@ class TapcreatorApp : Application() {
                     skillRegistry.init()
                     // 加载已注册的 MCP 服务器
                     mcpManager.init()
+                    // 加载 per-model 的图生图参考形态覆盖（用户/Agent 设置的档案纠正）
+                    loadModelProfileOverrides()
                     // 后台预热沙箱：解压 rootfs + 启动 PRoot + 安装 ffmpeg/curl/python3
                     // 首次约 30-60 秒，不阻塞首帧；沙箱就绪后 Agent 的搜索/拼接工具可用
                     sandbox.ensureReady()
@@ -54,6 +59,22 @@ class TapcreatorApp : Application() {
             }
             Handler(Looper.getMainLooper()).post {}
         }.start()
+    }
+
+    /** 把 DataStore 里的「图生图参考形态覆盖」灌进进程内的 ModelProfileCatalog（须在生成前完成）。 */
+    private suspend fun loadModelProfileOverrides() {
+        val raw = settings.imageRefOverridesJson()
+        if (raw.isBlank()) return
+        val map = runCatching {
+            kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                .decodeFromString<Map<String, String>>(raw)
+        }.getOrDefault(emptyMap())
+        map.forEach { (modelId, modeName) ->
+            runCatching {
+                val mode = com.tapcreator.app.backend.providers.ImageRefMode.valueOf(modeName)
+                com.tapcreator.app.backend.providers.ModelProfileCatalog.setImageRefOverride(modelId, mode)
+            }
+        }
     }
 
     /**

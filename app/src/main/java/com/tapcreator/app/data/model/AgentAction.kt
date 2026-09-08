@@ -34,6 +34,10 @@ data class AgentAction(
     val model_name: String? = null,
     /** configure_resolution 要写入的可选分辨率（逗号分隔，仅当需要设置时填写） */
     val resolutions: String? = null,
+    /** configure_model 要设置的图生图参考形态（AGNES_EXTRA_BODY_IMAGE / SENSENOVA_EDITS_JSON / EDITS_MULTIPART） */
+    val image_ref: String? = null,
+    /** configure_model 的调研备注 */
+    val note: String? = null,
     val quality: String? = null,
     val seconds: Int? = null,
     /** 引用本运行内第 N 个产出（从 1 计），用于图→视频、音频音色、风格参考 */

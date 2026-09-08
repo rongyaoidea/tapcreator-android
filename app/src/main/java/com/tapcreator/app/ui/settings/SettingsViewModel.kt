@@ -55,6 +55,32 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { skillRegistry.uninstall(id) }
     }
 
+    // ---------- 图生图参考形态（per-model 档案覆盖，模型配置页/Agent 均可设置） ----------
+
+    /** 当前生效的参考形态（含按 modelId 的覆盖）。 */
+    fun modelImageRefMode(modelId: String, baseUrl: String?, modelName: String): com.tapcreator.app.backend.providers.ImageRefMode =
+        com.tapcreator.app.backend.providers.ModelProfileCatalog.imageRefMode(baseUrl, modelName, modelId)
+
+    fun setModelImageRefMode(modelId: String, mode: com.tapcreator.app.backend.providers.ImageRefMode) {
+        com.tapcreator.app.backend.providers.ModelProfileCatalog.setImageRefOverride(modelId, mode)
+        persistImageRefOverrides()
+    }
+
+    fun clearModelImageRefMode(modelId: String) {
+        com.tapcreator.app.backend.providers.ModelProfileCatalog.clearImageRefOverride(modelId)
+        persistImageRefOverrides()
+    }
+
+    private fun persistImageRefOverrides() {
+        viewModelScope.launch {
+            val obj = kotlinx.serialization.json.buildJsonObject {
+                com.tapcreator.app.backend.providers.ModelProfileCatalog.imageRefOverrides()
+                    .forEach { (k, v) -> put(k, kotlinx.serialization.json.JsonPrimitive(v.name)) }
+            }
+            settings.saveImageRefOverridesJson(obj.toString())
+        }
+    }
+
     /** 沙箱状态 */
     var sandboxReady by mutableStateOf(false)
         private set

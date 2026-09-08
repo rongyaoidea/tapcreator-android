@@ -87,6 +87,14 @@ object AgentToolRegistry {
                 Param("resolutions", "string", "要写入的可选分辨率，逗号分隔；不填则仅查询当前/内置知识库"),
             ),
         ),
+        Tool(
+            "configure_model", "记录某模型的「图生图参考形态」，解决参考图不生效。各网关接口差异大：agnes 用 extra_body.image、SenseNova 用 JSON edits、其余 OpenAI 兼容用 multipart edits。先用 web_search 查官方文档确认该模型的参考图接入方式，再据此设置。",
+            listOf(
+                Param("model_name", "string", "模型名（channel 中登记的名称）", true),
+                Param("image_ref", "string", "参考形态：AGNES_EXTRA_BODY_IMAGE / SENSENOVA_EDITS_JSON / EDITS_MULTIPART，不填则仅记录 note"),
+                Param("note", "string", "调研结论/备注（供用户在设置页查看）"),
+            ),
+        ),
         Tool("memorize", "记住一条事实供后续复用。", listOf(Param("memory", "string", "要记忆的内容", true))),
         Tool("recall", "回顾已记忆内容。", listOf(Param("memory", "string", "检索关键词"))),
         Tool("list_runs", "回顾本会话此前的 Agent 执行批次（run_id/轮数/时长），供自我复盘。", emptyList()),

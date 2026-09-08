@@ -664,16 +664,16 @@ class ProviderGateway @Inject constructor(
     private fun openAiImage(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val hasRef = prefs.referenceImages.isNotEmpty()
         if (hasRef) {
-            // Agnes 网关无 /images/edits：参考图必须放进 /images/generations 的 extra_body.image
-            // （字符串数组，URL 或 data URI 均可）。此前走 edits→多模态→generations 顶层 image，
-            // agnes 忽略顶层 image → 静默纯文生图（用户反馈"参考完全没生效"）。故优先特判。
-            if (isAgnes(channel, model)) {
+            val mode = ModelProfileCatalog.imageRefMode(channel.baseUrl, model.name, model.id)
+            // 参考形态由档案表驱动（ModelProfileCatalog）：如 agnes 无 /images/edits、参考须放
+            // extra_body.image（原顶层 image 被忽略 → 静默纯文生图），这类唯一形态网关走专用分支。
+            if (mode == ImageRefMode.AGNES_EXTRA_BODY_IMAGE) {
                 return openAiImageAgnes(channel, secrets, model, prefs)
             }
-            // 其余 OpenAI 兼容：优先 /v1/images/edits（SenseNova 用 JSON，其它用 multipart form-data）；
+            // 其余 OpenAI 兼容：按档案选首选路径（SenseNova JSON edits / 通用 multipart edits）；
             // 失败 → 兜底多模态 chat → 兜底 /images/generations；仍失败明确报错，绝不静默丢参考。
             return try {
-                if (isSensenova(channel, model)) {
+                if (mode == ImageRefMode.SENSENOVA_EDITS_JSON) {
                     openAiImageEditsSensenova(channel, secrets, model, prefs)
                 } else {
                     openAiImageEditsMultipart(channel, secrets, model, prefs)
@@ -696,21 +696,6 @@ class ProviderGateway @Inject constructor(
             }
         }
         return openAiImageGenerations(channel, secrets, model, prefs)
-    }
-
-    /** 是否商汤 SenseNova（日日新）官方平台渠道：baseUrl 或模型名含 sensenova/u1/日日新 */
-    private fun isSensenova(channel: Channel, model: ModelOption): Boolean {
-        val base = channel.baseUrl.lowercase()
-        val mn = model.name.lowercase()
-        return base.contains("sensenova") || base.contains("sensetime") ||
-            mn.contains("u1") || mn.contains("u1.5") || mn.contains("日日新") || mn.contains("sensenova")
-    }
-
-    /** 是否 Agnes 网关（OpenAI 兼容图像，但图生图接口不同：无 /images/edits）。 */
-    private fun isAgnes(channel: Channel, model: ModelOption): Boolean {
-        val base = channel.baseUrl.lowercase()
-        val mn = model.name.lowercase()
-        return base.contains("agnes") || mn.contains("agnes")
     }
 
     /**

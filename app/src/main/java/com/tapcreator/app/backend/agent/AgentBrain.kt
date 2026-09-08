@@ -67,6 +67,7 @@ class AgentBrain @Inject constructor(
     private val skillRegistry: com.tapcreator.app.backend.skill.SkillRegistry,
     private val mcpManager: com.tapcreator.app.backend.mcp.MCPManager,
     private val rateLimiter: com.tapcreator.app.backend.RateLimiter,
+    private val settings: com.tapcreator.app.data.prefs.SettingsStore,
     private val db: AppDatabase,
 ) {
 
@@ -1191,6 +1192,32 @@ $styleBlock
                 val capped = result.take(2000)
                 st.trace += ChatMessage("user", "[观察] MCP「$serverName/$toolName」返回：\n$capped${if (result.length > 2000) "\n…（已截断）" else ""}")
             }
+            "configure_model" -> {
+                val mn = action.model_name?.trim()?.takeIf { it.isNotBlank() }
+                if (mn == null) {
+                    st.trace += ChatMessage("user", "[工具错误] configure_model 需提供 model_name。")
+                    return ActionOutcome.CONTINUE
+                }
+                val matched = db.modelOptionDao().all().filter {
+                    it.name.equals(mn, ignoreCase = true) || it.name.lowercase().contains(mn.lowercase())
+                }
+                val refMode = action.image_ref?.trim()?.takeIf { it.isNotBlank() }?.let {
+                    runCatching { com.tapcreator.app.backend.providers.ImageRefMode.valueOf(it) }.getOrNull()
+                }
+                if (refMode == null && matched.isEmpty()) {
+                    st.trace += ChatMessage("user", "[观察] 未匹配到模型「$mn」且未提供有效 image_ref，无法设置参考形态。可先 list 模型或用 web_search 查证。")
+                    return ActionOutcome.CONTINUE
+                }
+                if (refMode != null) {
+                    matched.forEach { m ->
+                        com.tapcreator.app.backend.providers.ModelProfileCatalog.setImageRefOverride(m.id, refMode)
+                    }
+                    persistModelProfileOverrides()
+                    st.trace += ChatMessage("user", "[观察] 已为 ${matched.size} 个匹配模型设置图生图参考形态：${refMode.name}（覆盖档案表）。${action.note?.takeIf { it.isNotBlank() }?.let { "备注：$it" } ?: ""}")
+                } else {
+                    st.trace += ChatMessage("user", "[观察] model_name=$mn 未设置参考形态（image_ref 为空）。${action.note?.takeIf { it.isNotBlank() } ?: ""}")
+                }
+            }
             else -> {
                 st.recoveries++
                 if (st.recoveries >= ACTION_RECOVERY_BUDGET) {
@@ -1205,6 +1232,15 @@ $styleBlock
             }
         }
         return ActionOutcome.PROCEED
+    }
+
+    /** 把进程内 ModelProfileCatalog 的图生图参考形态覆盖持久化到 DataStore（configure_model 写入后调用）。 */
+    private suspend fun persistModelProfileOverrides() {
+        val obj = kotlinx.serialization.json.buildJsonObject {
+            com.tapcreator.app.backend.providers.ModelProfileCatalog.imageRefOverrides()
+                .forEach { (k, v) -> put(k, kotlinx.serialization.json.JsonPrimitive(v.name)) }
+        }
+        settings.saveImageRefOverridesJson(obj.toString())
     }
 
     /** 写入一条会话记忆 */
