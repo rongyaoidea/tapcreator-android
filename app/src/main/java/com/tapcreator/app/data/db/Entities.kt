@@ -190,31 +190,6 @@ data class TraceEntity(
     val createdAt: Long,
 )
 
-/**
- * Agent 自进化技能库（全局默认生效）：自省阶段把失败教训/成功手法提炼为可复用启发式并落库，
- * 后续回合注入 system prompt 供遵循。state 流转：low 风险直接 active；high 风险先 pending 等人工审批。
- */
-@Entity(tableName = "agent_skills", indices = [Index(value = ["state"])])
-data class AgentSkillEntity(
-    @PrimaryKey val id: String,
-    /** 分类：generate / flow / reference / folder / toolfix / layout … */
-    val category: String,
-    /** 可执行启发式（≤200 字），注入时原样呈现 */
-    val content: String,
-    /** low 自动生效；high 需人工审批 */
-    val risk: String = "low",
-    /** draft / active / pending / rejected / retired */
-    val state: String = "active",
-    /** 仅作来源追溯；生效范围默认全局，不限定在此会话 */
-    val conversationId: String? = null,
-    val sourceRunId: String? = null,
-    val confidence: Float = 0.5f,
-    val usedCount: Int = 0,
-    val successCount: Int = 0,
-    val createdAt: Long,
-    val updatedAt: Long,
-)
-
 /** 会话级 UI 状态：保存「创作编辑现场 + Agent 现场 + 模型偏好」，返回会话时恢复 */
 @Entity(tableName = "conversation_states")
 data class ConversationStateEntity(

@@ -5,15 +5,17 @@ import com.tapcreator.app.data.model.DesignSkill
 import com.tapcreator.app.data.prefs.SettingsStore
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 /**
  * 设计 Skill 注册表：管理已安装的 Skill（内置预设 + 用户自建/第三方安装）。
  *
- *  - 内置 9 个预设随 App 发布，不可删除
+ *  - 内置预设（photo/poster/video）随 App 发布，不可删除，见 BuiltinSkills.presets
  *  - 用户通过 skill_creator 安装的第三方 skill 持久化到 DataStore
  *  - apply_skill 时按 id 查找返回 promptGuide，Agent 注入到 generate 的 prompt
  */
@@ -26,6 +28,10 @@ class SkillRegistry @Inject constructor(
     // 已安装的第三方 skill（内存缓存 + DataStore 持久化）
     private val _installedSkills = MutableStateFlow<List<DesignSkill>>(emptyList())
     val installedSkills: StateFlow<List<DesignSkill>> = _installedSkills
+
+    /** 内置预设 + 已安装 skill 的可观测流（内置恒定、已安装变化时重发），供「设计 Skill」UI 展示。 */
+    val designSkillsFlow: Flow<List<DesignSkill>> =
+        _installedSkills.map { installed -> BuiltinSkills.presets + installed }
 
     /**
      * 初始化：从 DataStore 加载已安装的第三方 skill。

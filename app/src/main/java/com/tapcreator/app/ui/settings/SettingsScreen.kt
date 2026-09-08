@@ -66,6 +66,8 @@ fun SettingsScreen(
 ) {
     val byKind by vm.modelsByKind.collectAsState()
     val channelList by vm.channelList.collectAsState()
+    val designSkills by vm.designSkills.collectAsState()
+    val designCount = designSkills.count { !it.builtIn }
 
     // 进入设置页即自动发现：为已配置的空分辨率模型补全调研到的档位（幂等）
     LaunchedEffect(Unit) { vm.autoFillResolutions() }
@@ -119,6 +121,11 @@ fun SettingsScreen(
                 title = "Alpine Linux",
                 subtitle = "沙箱环境与已安装依赖",
             ) { subPage = "alpine" }
+            SettingsEntryRow(
+                icon = "[S]",
+                title = "设计 Skill",
+                subtitle = "内置 ${com.tapcreator.app.data.model.BuiltinSkills.presets.size} 个 + 已安装 ${designCount} 个，风格创作指导",
+            ) { subPage = "skills" }
         }
     } else {
         // 子页面：带返回按钮
@@ -137,6 +144,7 @@ fun SettingsScreen(
                         "models" -> "模型配置"
                         "agent" -> "Agent 设置"
                         "alpine" -> "Alpine Linux"
+                        "skills" -> "设计 Skill"
                         else -> "设置"
                     },
                     style = MaterialTheme.typography.titleMedium,
@@ -163,6 +171,7 @@ fun SettingsScreen(
                     }
                     "agent" -> AgentPrefsSection(vm)
                     "alpine" -> AlpineSandboxSection(vm)
+                    "skills" -> DesignSkillsSection(vm)
                 }
             }
         }
@@ -881,5 +890,177 @@ private fun AddKindDialog(kind: MediaKind, label: String, vm: SettingsViewModel,
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
         },
+    )
+}
+/** 设计 Skill 列表：内置预设 + 用户安装。展示分类/来源/描述/建议比例，非内置项可删除。 */
+@Composable
+private fun DesignSkillsSection(vm: SettingsViewModel) {
+    val skills by vm.designSkills.collectAsState()
+    val categoryLabel = mapOf("photo" to "照片重塑", "poster" to "氛围海报", "video" to "视频创作")
+    var showEditor by remember { mutableStateOf(false) }
+    var editingSkill by remember { mutableStateOf<com.tapcreator.app.data.model.DesignSkill?>(null) }
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
+        Text(
+            text = "已安装的设计 Skill（${skills.size}）",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding),
+        )
+        Text(
+            text = "内置预设随 App 发布、不可删除；Agent 创作时可用 apply_skill 应用某个风格。也可在对话里让 Agent 用 skill_creator 新建风格。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 6.dp),
+        )
+        OutlinedButton(
+            onClick = { editingSkill = null; showEditor = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Dimens.PagePadding, vertical = 8.dp),
+        ) { Text("新建 Skill") }
+        skills.forEach { skill ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Dimens.PagePadding, vertical = 10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = skill.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "[${categoryLabel[skill.category] ?: skill.category}]",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        text = if (skill.builtIn) "  [内置]" else "  [自建]",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (skill.description.isNotBlank()) {
+                    Text(
+                        text = skill.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                val meta = buildString {
+                    if (skill.suggestedRatios.isNotBlank()) append("建议比例 ${skill.suggestedRatios}")
+                    if (skill.requiresImage) {
+                        if (isNotEmpty()) append(" · ")
+                        append("需原图")
+                    }
+                }
+                if (meta.isNotBlank()) {
+                    Text(
+                        text = meta,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                if (!skill.builtIn) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        TextButton(onClick = { editingSkill = skill; showEditor = true }) {
+                            Text("编辑", color = MaterialTheme.colorScheme.primary)
+                        }
+                        TextButton(onClick = { vm.deleteDesignSkill(skill.id) }) {
+                            Text("删除", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        }
+        if (showEditor) {
+            SkillEditorDialog(
+                original = editingSkill,
+                onDismiss = { showEditor = false },
+                onSave = { skill -> vm.saveDesignSkill(skill); showEditor = false },
+            )
+        }
+    }
+}
+
+/** 新建/编辑用户设计 Skill 的表单弹窗。original=null 表示新建；id 由名称 slug 化，编辑时保留原 id。 */
+@Composable
+private fun SkillEditorDialog(
+    original: com.tapcreator.app.data.model.DesignSkill?,
+    onDismiss: () -> Unit,
+    onSave: (com.tapcreator.app.data.model.DesignSkill) -> Unit,
+) {
+    var name by remember { mutableStateOf(original?.name ?: "") }
+    var category by remember { mutableStateOf(original?.category ?: "poster") }
+    var description by remember { mutableStateOf(original?.description ?: "") }
+    var promptGuide by remember { mutableStateOf(original?.promptGuide ?: "") }
+    var suggestedRatios by remember { mutableStateOf(original?.suggestedRatios ?: "") }
+    val derivedId = name.trim().lowercase().replace(Regex("\\s+"), "-")
+    val id = if (original != null) original.id else derivedId
+    val canSave = name.isNotBlank() && promptGuide.isNotBlank()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (original == null) "新建设计 Skill" else "编辑设计 Skill") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it }, label = { Text("名称") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+                if (original == null && derivedId.isNotBlank()) {
+                    Text(
+                        text = "生成 id：$derivedId",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text("分类", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("photo" to "照片重塑", "poster" to "氛围海报", "video" to "视频创作").forEach { (k, label) ->
+                        FilterChip(selected = category == k, onClick = { category = k }, label = { Text(label) })
+                    }
+                }
+                OutlinedTextField(
+                    value = description, onValueChange = { description = it }, label = { Text("描述（可选）") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = suggestedRatios, onValueChange = { suggestedRatios = it },
+                    label = { Text("建议比例（逗号分隔，如 1:1, 16:9）") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = promptGuide, onValueChange = { promptGuide = it }, label = { Text("风格指导 prompt") },
+                    minLines = 4, modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = canSave,
+                onClick = {
+                    onSave(
+                        com.tapcreator.app.data.model.DesignSkill(
+                            id = id,
+                            name = name.trim(),
+                            category = category,
+                            promptGuide = promptGuide.trim(),
+                            suggestedRatios = suggestedRatios.trim(),
+                            requiresImage = category == "photo",
+                            description = description.trim(),
+                            builtIn = false,
+                        ),
+                    )
+                },
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }

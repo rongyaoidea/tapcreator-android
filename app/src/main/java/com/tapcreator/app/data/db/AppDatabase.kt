@@ -24,11 +24,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MemoryEntity::class,
         AssetFolderEntity::class,
         TraceEntity::class,
-        AgentSkillEntity::class,
         ConversationStateEntity::class,
         AgentRunSkillEntity::class,
     ],
-    version = 13,
+    version = 14,
     // 导出 schema 快照：迁移出错时可 diff 出字段差异。schema 文件由 KSP 写入
     // app/schemas/（见 app/build.gradle.kts 的 ksp arg room.schemaLocation），入 git 留档。
     exportSchema = true,
@@ -50,8 +49,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun assetFolderDao(): AssetFolderDao
 
     abstract fun traceDao(): TraceDao
-
-    abstract fun skillDao(): SkillDao
 
     abstract fun runSkillDao(): AgentRunSkillDao
 
@@ -202,6 +199,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 清理从未接入 agent 的「自进化技能库」遗留表（设计 Skill 走 DataStore，不依赖此表）
+                db.execSQL("DROP TABLE IF EXISTS agent_skills")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -209,7 +213,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "tapcreator.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
                 // 去掉 destructive fallback：schema 不匹配直接启动崩溃（fail-fast），避免静默清空用户数据掩盖迁移遗漏。
                 // 后续新增字段务必先补 Migration 再接 version。
                 .build().also { instance = it }

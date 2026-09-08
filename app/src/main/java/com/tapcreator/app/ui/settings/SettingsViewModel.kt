@@ -8,7 +8,6 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.tapcreator.app.backend.service.ChannelRepository
-import com.tapcreator.app.data.db.AgentSkillEntity
 import com.tapcreator.app.data.db.AppDatabase
 import com.tapcreator.app.data.db.ChannelEntity
 import com.tapcreator.app.data.db.ModelOptionEntity
@@ -36,11 +35,25 @@ class SettingsViewModel @Inject constructor(
     private val settings: SettingsStore,
     private val mcpManager: com.tapcreator.app.backend.mcp.MCPManager,
     private val sandbox: com.tapcreator.app.backend.sandbox.PRootSandbox,
+    private val skillRegistry: com.tapcreator.app.backend.skill.SkillRegistry,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
     /** 已注册的 MCP 服务器列表 */
     val mcpServers = mutableStateOf<List<com.tapcreator.app.backend.mcp.MCPServer>>(emptyList())
+
+    /** 全部设计 Skill（内置预设 + 用户安装），供「设计 Skill」子页展示 */
+    val designSkills: StateFlow<List<com.tapcreator.app.data.model.DesignSkill>> =
+        skillRegistry.designSkillsFlow.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            skillRegistry.all(),
+        )
+
+    /** 删除一个用户安装的 Skill（内置预设 builtIn=true 时 registry 会拒绝） */
+    fun deleteDesignSkill(id: String) {
+        viewModelScope.launch { skillRegistry.uninstall(id) }
+    }
 
     /** 沙箱状态 */
     var sandboxReady by mutableStateOf(false)
@@ -350,55 +363,11 @@ class SettingsViewModel @Inject constructor(
         feedback = null
     }
 
-    // ---------- Agent 自进化技能库（P3 学习区） ----------
+    // ---------- 设计 Skill 手动编辑（DataStore 持久化，与 agent 的 skill_creator 同源） ----------
 
-    /** 待人工审批的技能（high 风险沉淀产生） */
-    val pendingSkills: StateFlow<List<AgentSkillEntity>> =
-        db.skillDao().observePending()
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    /** 当前已生效的技能（全局，自动注入 Agent 上下文） */
-    val activeSkills: StateFlow<List<AgentSkillEntity>> =
-        db.skillDao().observeActive()
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    /** 高危技能的展示备注 */
-    fun riskLabel(risk: String): String = when (risk) {
-        "high" -> "高危"
-        "low" -> "低危"
-        else -> "低危"
-    }
-
-    /** 审批通过一条待审技能 → 生效 */
-    fun approveSkill(id: String) {
-        viewModelScope.launch {
-            db.skillDao().setState(id, "active", System.currentTimeMillis())
-            toast("技能已生效")
-        }
-    }
-
-    /** 拒绝一条待审技能 → 直接删除 */
-    fun rejectSkill(id: String) {
-        viewModelScope.launch {
-            db.skillDao().deleteById(id)
-            toast("已拒绝该技能")
-        }
-    }
-
-    /** 撤销一条已生效技能 → 退休 */
-    fun revokeSkill(id: String) {
-        viewModelScope.launch {
-            db.skillDao().setState(id, "retired", System.currentTimeMillis())
-            toast("技能已撤销")
-        }
-    }
-
-    /** 一键清空整个学习库（撤销全部已学技能） */
-    fun clearSkills() {
-        viewModelScope.launch {
-            db.skillDao().clearAll()
-            toast("学习库已清空")
-        }
+    /** 保存（新建或更新）一个用户设计 Skill；id 命中已安装项则覆盖，否则新增。内置预设不受影响。 */
+    fun saveDesignSkill(skill: com.tapcreator.app.data.model.DesignSkill) {
+        viewModelScope.launch { skillRegistry.install(skill) }
     }
 
     /** 保存搜索 API 配置 */

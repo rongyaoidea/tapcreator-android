@@ -357,51 +357,6 @@ interface TraceDao {
     suspend fun clearByConversation(conversationId: String)
 }
 
-/** Agent 自进化技能库 */
-@Dao
-interface SkillDao {
-    @Insert
-    suspend fun insert(skill: AgentSkillEntity)
-
-    /** 当前生效技能（注入用）：已激活，按 置信度×近更新 排序 */
-    @Query("SELECT * FROM agent_skills WHERE state = 'active' ORDER BY confidence DESC, updatedAt DESC LIMIT :limit")
-    suspend fun active(limit: Int = 50): List<AgentSkillEntity>
-
-    /** 待人工审批的技能（high 风险） */
-    @Query("SELECT * FROM agent_skills WHERE state IN ('pending','draft') ORDER BY createdAt DESC")
-    fun observePending(): Flow<List<AgentSkillEntity>>
-
-    @Query("SELECT * FROM agent_skills WHERE state IN ('pending','draft') ORDER BY createdAt DESC")
-    suspend fun pendingList(): List<AgentSkillEntity>
-
-    /** 已生效的技能（全局列表） */
-    @Query("SELECT * FROM agent_skills WHERE state = 'active' ORDER BY updatedAt DESC")
-    fun observeActive(): Flow<List<AgentSkillEntity>>
-
-    @Query("SELECT * FROM agent_skills WHERE id = :id LIMIT 1")
-    suspend fun byId(id: String): AgentSkillEntity?
-
-    @Query("UPDATE agent_skills SET state = :state, updatedAt = :now WHERE id = :id")
-    suspend fun setState(id: String, state: String, now: Long)
-
-    @Query("UPDATE agent_skills SET usedCount = usedCount + 1, updatedAt = :now WHERE id = :id")
-    suspend fun bumpUsed(id: String, now: Long)
-
-    @Query("UPDATE agent_skills SET successCount = successCount + 1, updatedAt = :now WHERE id = :id")
-    suspend fun bumpSuccess(id: String, now: Long)
-
-    @Query("DELETE FROM agent_skills WHERE id = :id")
-    suspend fun deleteById(id: String)
-
-    /** 清空整个学习库（一键撤销所有已学技能） */
-    @Query("DELETE FROM agent_skills")
-    suspend fun clearAll()
-
-    /** 相近内容去重检查 */
-    @Query("SELECT * FROM agent_skills WHERE state IN ('active','pending') AND content = :content LIMIT 1")
-    suspend fun findByContent(content: String): AgentSkillEntity?
-}
-
 /** 记录「一次 Agent 运行注入了哪些技能」，供用户反馈时精确归因赢率 */
 @Dao
 interface AgentRunSkillDao {

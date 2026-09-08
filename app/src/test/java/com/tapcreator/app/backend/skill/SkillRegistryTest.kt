@@ -16,8 +16,8 @@ import org.junit.Test
 class SkillRegistryTest {
 
     @Test
-    fun `BuiltinSkills has 9 presets`() {
-        assertEquals("应有 9 个内置预设", 9, BuiltinSkills.presets.size)
+    fun `BuiltinSkills has 18 presets`() {
+        assertEquals("应有 18 个内置预设（5 photo + 12 poster + 1 video）", 18, BuiltinSkills.presets.size)
     }
 
     @Test
@@ -26,7 +26,7 @@ class SkillRegistryTest {
             assertTrue("技能 ${s.id} 缺 id", s.id.isNotBlank())
             assertTrue("技能 ${s.id} 缺 name", s.name.isNotBlank())
             assertTrue("技能 ${s.id} 缺 promptGuide", s.promptGuide.isNotBlank())
-            assertTrue("技能 ${s.id} category 无效", s.category in setOf("photo", "poster"))
+            assertTrue("技能 ${s.id} category 无效", s.category in setOf("photo", "poster", "video"))
             assertTrue("技能 ${s.id} 应标记为 builtIn", s.builtIn)
         }
     }
@@ -58,7 +58,7 @@ class SkillRegistryTest {
     @Test
     fun `can install and list skills`() {
         val registry = TestSkillRegistry()
-        assertEquals("初始只有内置预设", 9, registry.all().size)
+        assertEquals("初始只有内置预设", 18, registry.all().size)
 
         val custom = DesignSkill(
             id = "test-vintage",
@@ -70,7 +70,7 @@ class SkillRegistryTest {
         )
         // 模拟 install（TestSkillRegistry 直接操作内存）
         registry.installForTest(custom)
-        assertEquals("安装后应有 10 个", 10, registry.all().size)
+        assertEquals("安装后应有 19 个", 19, registry.all().size)
         assertNotNull("可按 id 查找", registry.byId("test-vintage"))
     }
 
@@ -86,6 +86,29 @@ class SkillRegistryTest {
     fun `all builtin skills have description`() {
         BuiltinSkills.presets.forEach { s ->
             assertTrue("技能 ${s.id} 缺 description", s.description.isNotBlank())
+        }
+    }
+
+    @Test
+    fun `minimax h3 builtin video skill exists`() {
+        val h3 = BuiltinSkills.presets.firstOrNull { it.id == "minimax-h3" }
+        assertNotNull("应内置 MiniMax H3 视频 skill", h3)
+        assertEquals("video", h3?.category)
+        assertFalse("H3 不强制原图", h3?.requiresImage == true)
+        assertTrue(
+            "H3 promptGuide 应含官方镜头语言词",
+            h3!!.promptGuide.contains("Push In") || h3.promptGuide.contains("Tracking Shot"),
+        )
+    }
+
+    @Test
+    fun `only photo category skills require image`() {
+        BuiltinSkills.presets.forEach { s ->
+            assertEquals(
+                "技能 ${s.id} 的 requiresImage 应严格等于是否 photo 类",
+                s.category == "photo",
+                s.requiresImage,
+            )
         }
     }
 }
