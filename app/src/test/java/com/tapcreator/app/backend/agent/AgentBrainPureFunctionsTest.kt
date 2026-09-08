@@ -189,56 +189,6 @@ class AgentBrainPureFunctionsTest {
         assertFalse(canUseReferenceImpl(MediaKind.AUDIO, MediaKind.VIDEO))
     }
 
-    // ============ detectRepeatedAction 等价测试 ============
-
-    @Test
-    fun `detectRepeatedAction returns false for first action`() {
-        val actions = mutableListOf<String>()
-        val action = AgentAction(action = "generate", tool = "GENERATE_IMAGE", prompt = "test")
-        assertFalse(detectRepeatedActionImpl(action, actions))
-    }
-
-    @Test
-    fun `detectRepeatedAction returns false for two different actions`() {
-        val actions = mutableListOf<String>()
-        val a1 = AgentAction(action = "generate", tool = "GENERATE_IMAGE", prompt = "cat")
-        val a2 = AgentAction(action = "generate", tool = "GENERATE_IMAGE", prompt = "dog")
-        detectRepeatedActionImpl(a1, actions)
-        assertFalse(detectRepeatedActionImpl(a2, actions))
-    }
-
-    @Test
-    fun `detectRepeatedAction returns true for three identical actions`() {
-        val actions = mutableListOf<String>()
-        val action = AgentAction(action = "generate", tool = "GENERATE_IMAGE", prompt = "same")
-        detectRepeatedActionImpl(action, actions)
-        detectRepeatedActionImpl(action, actions)
-        assertTrue(detectRepeatedActionImpl(action, actions))
-    }
-
-    @Test
-    fun `detectRepeatedAction resets when different action appears`() {
-        val actions = mutableListOf<String>()
-        val same = AgentAction(action = "generate", tool = "GENERATE_IMAGE", prompt = "same")
-        val diff = AgentAction(action = "finish", prompt = null)
-        detectRepeatedActionImpl(same, actions)
-        detectRepeatedActionImpl(same, actions)
-        detectRepeatedActionImpl(diff, actions) // 不同动作打断重复
-        val sameAgain = AgentAction(action = "generate", tool = "GENERATE_IMAGE", prompt = "same")
-        assertFalse(detectRepeatedActionImpl(sameAgain, actions))
-    }
-
-    @Test
-    fun `detectRepeatedAction truncates prompt to 60 chars in hash`() {
-        val actions = mutableListOf<String>()
-        val longPrompt = "x".repeat(100)
-        val action = AgentAction(action = "generate", tool = "GENERATE_IMAGE", prompt = longPrompt)
-        detectRepeatedActionImpl(action, actions)
-        // 队列里应只存前 60 字符的特征
-        assertEquals(1, actions.size)
-        assertTrue(actions[0].length < 100)
-    }
-
     // ============ 纯函数实现（与 AgentBrain 内逻辑一致） ============
 
     private fun stripFenceImpl(raw: String): String {
@@ -287,15 +237,4 @@ class AgentBrainPureFunctionsTest {
             MediaKind.IMAGE -> sourceKind == MediaKind.IMAGE
             else -> sourceKind == MediaKind.IMAGE || sourceKind == MediaKind.VIDEO
         }
-
-    private fun detectRepeatedActionImpl(action: AgentAction, lastActions: MutableList<String>): Boolean {
-        val hash = buildString {
-            append(action.action)
-            if (action.tool != null) append(":").append(action.tool)
-            if (action.prompt != null) append(":").append(action.prompt.take(60))
-        }
-        lastActions.add(hash)
-        if (lastActions.size > 3) lastActions.removeAt(0)
-        return lastActions.size == 3 && lastActions.toSet().size == 1
-    }
 }

@@ -60,10 +60,6 @@ data class AgentAction(
     val title: String? = null,
     /** update_card 的新文本内容 */
     val content: String? = null,
-    /** 分镜优化：运动强度 scale（H3 透传 motion.scale） */
-    val motion: Float? = null,
-    /** 分镜优化：CFG scale（透传 H3 cfg_scale） */
-    val cfgScale: Float? = null,
     /** memorize 内容 / recall 关键字 */
     val memory: String? = null,
     /** read_trace 目标执行批次 id（list_runs 返回） */

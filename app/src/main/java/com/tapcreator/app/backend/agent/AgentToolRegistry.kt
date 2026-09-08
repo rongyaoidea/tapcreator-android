@@ -30,8 +30,6 @@ object AgentToolRegistry {
                 Param("reference", "integer", "引用本运行内第 N 个产出（从1计）"),
                 Param("reference_card", "string", "引用本会话既有卡片 id"),
                 Param("reference_folder", "string", "素材库文件夹名，固定人物/产品形象"),
-                Param("motion", "number", "运动强度 scale"),
-                Param("cfgScale", "number", "CFG scale"),
             ),
         ),
         Tool("list_cards", "列出本会话所有卡片（id/类型/标题/内容摘要）。", emptyList()),
@@ -120,7 +118,7 @@ object AgentToolRegistry {
         Tool("skill_creator", "创建/安装一个第三方设计 Skill。用户可自定义风格指导 prompt，安装后 Agent 可 apply_skill 使用。",
             listOf(
                 Param("name", "string", "Skill 名称（英文短词，如 vintage-film）", true),
-                Param("category", "string", "分类：photo（需原图）/ poster（氛围海报）", true),
+                Param("category", "string", "分类：photo（需原图）/ poster（氛围海报）/ video（视频创作提示词）", true),
                 Param("prompt_guide", "string", "风格指导 prompt（apply 时注入 generate 的提示词）", true),
                 Param("description", "string", "简短描述"),
                 Param("suggested_ratios", "string", "建议比例，逗号分隔（如 16:9,1:1）"),
@@ -154,6 +152,15 @@ object AgentToolRegistry {
                 Param("arguments", "string", "工具参数，JSON 格式（如 {\"key\":\"value\"}）"),
             )),
     )
+
+    /**
+     * 按注册表 required 标记做统一预检：返回 action 名对应工具中「缺失的必填参数名」。
+     * 工具名未知时返回空（交由 AgentBrain 的「未知动作」分支处理，避免双重报错）。
+     */
+    fun missingRequired(name: String, providedKeys: Set<String>): List<String> {
+        val tool = tools.firstOrNull { it.name == name } ?: return emptyList()
+        return tool.params.filter { it.required }.map { it.name }.filter { it !in providedKeys }
+    }
 
     /** 渲染为 JSON 数组形式的工具清单（合法 JSON），供 Agent 直接读取以了解可调用能力 */
     fun toPromptTable(): String = buildString {

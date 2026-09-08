@@ -64,8 +64,6 @@ data class GenerationPreferences(
     val referencedAssetIds: List<String> = emptyList(),
     val referenceTexts: List<String> = emptyList(),   // 参考素材解析出的文本内容
     val referenceImages: List<String> = emptyList(),  // 参考图片的 data URI（多模态输入）
-    val motion: Float? = null,        // 分镜优化：运动强度 scale（H3 透传 motion.scale）
-    val cfgScale: Float? = null,      // 分镜优化：CFG scale（H3 透传 cfg_scale）
     val prompt: String = "",
     /** 提示词是否经 LLM 增强；persistOneCard 据此写 CardEntity.promptEnhanced */
     val promptEnhanced: Boolean = false,
@@ -85,8 +83,6 @@ data class RunRequest(
     val seconds: Int? = null,   // 视频目标总时长（秒），超单段上限时自动分段续生成
     val referencedAssetIds: List<String> = emptyList(),
     val referencedAssetPaths: List<String> = emptyList(), // 跨会话素材参考：全局素材库 mediaPath
-    val motion: Float? = null,   // 分镜优化：运动强度（透传 H3）
-    val cfgScale: Float? = null, // 分镜优化：CFG scale（透传 H3）
     /** 提示词是否经 LLM 增强（promptOptimize 开关且优化成功）；落卡时写入 CardEntity.promptEnhanced */
     val promptEnhanced: Boolean = false,
 )

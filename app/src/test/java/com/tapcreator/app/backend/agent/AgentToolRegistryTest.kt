@@ -113,4 +113,28 @@ class AgentToolRegistryTest {
         // list_cards 无 required 参数，不应出现 required 键
         assertFalse("list_cards 无必填参数，不应有 required 数组", params.containsKey("required"))
     }
+
+    @Test
+    fun `missingRequired flags absent required params`() {
+        val missing = AgentToolRegistry.missingRequired("generate", setOf("prompt"))
+        assertEquals("缺 tool 一项", listOf("tool"), missing)
+    }
+
+    @Test
+    fun `missingRequired empty when all required present`() {
+        assertTrue(
+            "generate 带 tool+prompt 应无缺失",
+            AgentToolRegistry.missingRequired("generate", setOf("tool", "prompt")).isEmpty(),
+        )
+        assertTrue(
+            "list_cards 无必填",
+            AgentToolRegistry.missingRequired("list_cards", emptySet()).isEmpty(),
+        )
+    }
+
+    @Test
+    fun `missingRequired empty for unknown action name`() {
+        // 未知动作交由「未知动作」分支处理，预检不应误报缺参数
+        assertTrue(AgentToolRegistry.missingRequired("frobnicate", emptySet()).isEmpty())
+    }
 }

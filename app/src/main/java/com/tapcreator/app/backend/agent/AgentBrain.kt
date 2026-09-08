@@ -92,7 +92,7 @@ $styleBlock
 【创作流程（每次创作必须按此顺序推进）】
 1. 确定创作对象：用户要图还是要视频？目标参数（比例/分辨率/时长）是否明确？不明确先问或在 summary 里说明假设。
 2. 收集参考：需要参考素材时先 list_assets 找素材库里的文件/文件夹，用 reference_folder 或 reference_card 引用；没有参考就直接进入下一步，不要假装有参考。
-3. 生成提示词：优先用 apply_skill 调用设计 Skill 注入风格（先 list_skills 看可用项）；也允许按现有风格直接撰写提示词，不用 Skill 也可以。提示词要具体：主体/动作/场景/光影/风格/构图。
+3. 生成提示词：优先用 apply_skill 调用设计 Skill 注入风格（可用风格已在上下文列出，直接传 id；需更多细节再 list_skills）；也允许按现有风格直接撰写提示词，不用 Skill 也可以。提示词要具体：主体/动作/场景/光影/风格/构图。
 4. 提交生成：调 generate 真正执行任务（tool=GENERATE_IMAGE/GENERATE_VIDEO…），把上一步的提示词与参考传进去。
 5. 等待并观察：不要连续 duplicate 同样的 generate；一次一个动作，拿到结果后再决定下一步。
 
@@ -153,8 +153,8 @@ $styleBlock
         val toolsJson = AgentToolRegistry.toFunctionSchemas()
         // 上游是否支持结构化 function calling：首次默认 true，收到 400 后标记 false 切纯文本 JSON 动作模式
         var toolsSupported = true
-        // 防重复动作检测队列：记录最近 3 轮动作特征，连续相同则强制 finish
-        val lastActions = mutableListOf<String>()
+        // 死循环检测器：滑动窗口识别 未知工具/无进展/重复空转，分级 WARNING→CRITICAL
+        val loopDetector = ToolLoopDetector()
         // P1：整体时间预算 + 单工具超时（毫秒）
         val startedAt = System.currentTimeMillis()
         val visionCapable = model.capabilities.contains("vision")
@@ -191,7 +191,6 @@ $styleBlock
             produced = produced,
             outputCards = outputCards,
             trace = trace,
-            lastActions = lastActions,
         )
         while (turn < maxTurns && !st.finished) {
             turn++
@@ -332,17 +331,41 @@ $styleBlock
             st.recoveries = 0
             st.trace += ChatMessage("assistant", actionText)
 
-            // 防重复动作检测：最近 3 轮动作特征完全相同时强制 finish，避免 Agent 反复执行同一 failed 动作
-            if (detectRepeatedAction(action, st.lastActions)) {
-                ctx.emitTrace()
-                writeAssistantSummary(ctx.conversationId, "检测到连续重复动作（${action.action}），已终止本轮避免空转。请重试或简化指令。")
-                st.summaryWritten = true
-                st.finished = true
-                st.forcedStop = true
-                break
+            // 死循环预检（执行前）：CRITICAL 时跳过执行，把拦截原因作为观察回灌，给模型改正机会。
+            // finish 不纳入检测（首次 finish 即结束、不会累积；拦截收尾动作不合语义）。
+            val toolParams = signatureParams(action)
+            if (action.action != "finish") {
+                val loopPre = loopDetector.check(action.action, toolParams)
+                if (loopPre.level == LoopLevel.CRITICAL) {
+                    val blockMsg = loopPre.message ?: "[LOOP BLOCKED]"
+                    st.trace += ChatMessage("user", blockMsg)
+                    loopDetector.record(action.action, toolParams, result = blockMsg, errorMessage = null)
+                    continue
+                }
             }
 
-            when (executeAction(action, st, ctx)) {
+            val traceSizeBefore = st.trace.size
+            val outcome = executeAction(action, st, ctx)
+
+            // 执行后登记本轮观察；WARNING 时把告警作为额外观察回灌，供模型下一轮读取。
+            if (action.action != "finish") {
+                val observation = st.trace.drop(traceSizeBefore).lastOrNull { it.role == "user" }?.content
+                val isError = observation != null && (
+                    observation.startsWith("[工具错误]") ||
+                        observation.startsWith("[工具失败]") ||
+                        observation.startsWith("[动作错误]")
+                    )
+                val loopPost = loopDetector.record(
+                    action.action, toolParams,
+                    result = observation,
+                    errorMessage = if (isError) observation else null,
+                )
+                if (loopPost.level == LoopLevel.WARNING && loopPost.message != null) {
+                    st.trace += ChatMessage("user", loopPost.message)
+                }
+            }
+
+            when (outcome) {
                 ActionOutcome.CONTINUE -> continue
                 ActionOutcome.BREAK -> break
                 ActionOutcome.PROCEED -> {}
@@ -394,7 +417,6 @@ $styleBlock
         var produced: HashMap<Int, String> = HashMap(),
         var outputCards: MutableList<String> = mutableListOf(),
         var trace: MutableList<ChatMessage> = mutableListOf(),
-        var lastActions: MutableList<String> = mutableListOf(),
         /** 当前激活的设计 Skill prompt（apply_skill 设置，generate 时注入到 prompt 前） */
         var activeSkillPrompt: String? = null,
     )
@@ -429,6 +451,13 @@ $styleBlock
      * - PROCEED：动作正常走完，继续后续流程。
      */
     private suspend fun executeAction(action: AgentAction, st: AgentLoopState, ctx: AgentLoopContext): ActionOutcome {
+        // 统一预检：按注册表 required 标记检查缺失的必填参数，缺失即回灌、不进入具体分支。
+        // 具体分支内的校验只保留「取值非法/跨字段规则」，必填缺失由这里统一兜底。
+        val missing = AgentToolRegistry.missingRequired(action.action, signatureParams(action).keys)
+        if (missing.isNotEmpty()) {
+            st.trace += ChatMessage("user", "[预检失败] 动作「${action.action}」缺少必填参数：${missing.joinToString("、")}。请补全后重试，或改用其它动作/finish。")
+            return ActionOutcome.CONTINUE
+        }
         when (action.action) {
             "generate" -> {
                 val kind = kindOfTool(action.tool)
@@ -502,8 +531,6 @@ $styleBlock
                             seconds = if (kind == MediaKind.VIDEO) action.seconds else null,
                             referencedAssetIds = usedRefIds + callerUsable,
                             referencedAssetPaths = ctx.referenceAssetPaths + folderAssetPaths,
-                            motion = action.motion,
-                            cfgScale = action.cfgScale,
                         )
                     )
                 } catch (e: TapcreatorException) {
@@ -930,10 +957,10 @@ $styleBlock
             }
             "skill_creator" -> {
                 val name = action.name?.trim()?.takeIf { it.isNotBlank() }
-                val cat = action.category?.trim()?.takeIf { it in setOf("photo", "poster") }
+                val cat = action.category?.trim()?.takeIf { it in setOf("photo", "poster", "video") }
                 val guide = action.prompt_guide?.trim()?.takeIf { it.isNotBlank() }
                 if (name == null || cat == null || guide == null) {
-                    st.trace += ChatMessage("user", "[工具错误] skill_creator 需提供 name（非空）、category（photo/poster）、prompt_guide（风格指导，非空）。")
+                    st.trace += ChatMessage("user", "[工具错误] skill_creator 需提供 name（非空）、category（photo/poster/video）、prompt_guide（风格指导，非空）。")
                     return ActionOutcome.CONTINUE
                 }
                 skillRegistry.install(
@@ -1244,8 +1271,13 @@ $styleBlock
                 val kinds = assets.map { it.kind.name.lowercase() }.distinct().ifEmpty { listOf("空") }
                 "「${f.name}」（${f.kind}：${kinds.joinToString("/")} 素材）"
             }
-        if (cards.isEmpty() && mems.isEmpty() && folders.isEmpty()) return null
+        // 把设计 Skill 目录注入上下文，让大脑生成前即可直接 apply_skill，省一次 list_skills 往返
+        val skillCatalog = com.tapcreator.app.backend.skill.SkillCatalog.render(skillRegistry.list())
+        if (cards.isEmpty() && mems.isEmpty() && folders.isEmpty() && skillCatalog.isBlank()) return null
         return buildString {
+            if (skillCatalog.isNotBlank()) {
+                append(skillCatalog)
+            }
             if (folders.isNotEmpty()) {
                 appendLine("素材库文件夹（可在 generate 用 reference_folder 传这些文件夹名来固定形象/画面）：")
                 folders.forEach { appendLine("  - $it") }
@@ -1533,17 +1565,26 @@ private suspend fun handleBrainCallFailure(
     }
 }
 
-/** 防重复动作检测：维护最近 3 轮动作特征队列，动作特征为 "action:tool:prompt前60字符"。
-     *  连续 3 轮完全相同时返回 true，触发强制 finish 避免空转。 */
-    internal fun detectRepeatedAction(action: AgentAction, lastActions: MutableList<String>): Boolean {
-        val hash = buildString {
-            append(action.action)
-            if (action.tool != null) append(":").append(action.tool)
-            if (action.prompt != null) append(":").append(action.prompt.take(60))
-        }
-        lastActions.add(hash)
-        if (lastActions.size > 3) lastActions.removeAt(0)
-        return lastActions.size == 3 && lastActions.toSet().size == 1
+/** 把动作的关键参数摊平成稳定 Map，供 [ToolLoopDetector] 计算 argsHash。
+     *  排除 action（作为 toolName 单独传）与收尾 summary（finish 文本变化不代表调用不同）。
+     *  保留全部有语义的字段，让「同参数重复」被准确识别为无进展循环。 */
+    private fun signatureParams(action: AgentAction): Map<String, String> {
+        val m = LinkedHashMap<String, String>()
+        fun put(k: String, v: Any?) { if (v != null) m[k] = v.toString() }
+        put("tool", action.tool); put("prompt", action.prompt); put("ratio", action.ratio)
+        put("resolution", action.resolution); put("model_name", action.model_name)
+        put("resolutions", action.resolutions); put("quality", action.quality); put("seconds", action.seconds)
+        put("reference", action.reference); put("reference_card", action.reference_card)
+        put("reference_folder", action.reference_folder); put("card_id", action.card_id)
+        put("asset_id", action.asset_id); put("folder_id", action.folder_id); put("folder_name", action.folder_name)
+        put("folder_kind", action.folder_kind); put("query", action.query); put("url", action.url)
+        put("title", action.title); put("content", action.content); put("memory", action.memory)
+        put("run_id", action.run_id); put("from_card_id", action.from_card_id); put("to_card_id", action.to_card_id)
+        put("role", action.role); put("skill_id", action.skill_id); put("command", action.command)
+        put("script_content", action.script_content); put("language", action.language); put("package", action.`package`)
+        put("server", action.server); put("arguments", action.arguments); put("name", action.name)
+        put("category", action.category); put("prompt_guide", action.prompt_guide)
+        return m
     }
 
     companion object {

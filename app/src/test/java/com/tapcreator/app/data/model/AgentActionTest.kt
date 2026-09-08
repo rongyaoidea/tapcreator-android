@@ -117,7 +117,5 @@ class AgentActionTest {
         val action = json.decodeFromString<AgentAction>(raw)
         assertNull(action.seconds)
         assertNull(action.reference)
-        assertNull(action.motion)
-        assertNull(action.cfgScale)
     }
 }

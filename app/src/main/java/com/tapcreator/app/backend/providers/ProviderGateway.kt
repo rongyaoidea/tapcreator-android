@@ -145,9 +145,6 @@ class ProviderGateway @Inject constructor(
             put("resolution", normalizeResolution(model, MediaKind.VIDEO, prefs.resolution, prefs.ratio, prefs.quality) ?: if (prefs.quality == "high") "2K" else "768P")
             put("duration", (prefs.seconds ?: 5).coerceIn(4, 15))
             put("ratio", h3Ratio(prefs.ratio))
-            // 分镜优化 参数透传（由 Agent 规划提供；上游若不识别会走统一错误处理）
-            prefs.cfgScale?.let { put("cfg_scale", it) }
-            prefs.motion?.let { put("motion", buildJsonObject { put("type", "up"); put("scale", it) }) }
         }
         val createResp = execute(channel, secrets, "/v2/video_generation", body)
         val taskId = createResp["task_id"]?.jsonPrimitive?.content

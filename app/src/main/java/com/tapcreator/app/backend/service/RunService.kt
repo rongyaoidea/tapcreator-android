@@ -879,8 +879,6 @@ class RunService @Inject constructor(
         seconds = request.seconds,
         count = request.count.coerceAtLeast(1),
         referencedAssetIds = request.referencedAssetIds,
-        motion = request.motion,
-        cfgScale = request.cfgScale,
         prompt = request.prompt,
         promptEnhanced = request.promptEnhanced,
     )
