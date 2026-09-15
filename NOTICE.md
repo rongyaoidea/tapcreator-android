@@ -7,26 +7,13 @@ GNU General Public License v3.0 only (see `LICENSE`).
 ## Derived from / inspired by upstream projects
 
 - **OpenMinis** (https://github.com/OpenMinis) — GNU GPL-3.0.
-  - The Android PRoot + Alpine sandbox design in
-    `app/src/main/java/com/tapcreator/app/backend/sandbox/PRootSandbox.kt` and the
-    agent loop-detector in
+  - The agent loop-detector in
     `app/src/main/java/com/tapcreator/app/backend/agent/ToolLoopDetector.kt`
-    are derived from / adapted against OpenMinis, which is likewise GPL-3.0.
-    Combining them under GPL-3.0 is compatible; both source and license are preserved here.
-
-## Bundled native / binary components
-
-- **proot** (https://github.com/termux/proot, and the OpenMinis fork) — **GPL-2.0**.
-  Shipped as `app/src/main/jniLibs/arm64-v8a/libproot.so` and `libproot-loader.so`.
-  Used as a separate executable via `exec()` (process isolation); its GPL-2.0 terms
-  apply to the proot binaries. Source is available from the upstream project.
-- **talloc** (Samba, https://talloc.samba.org) — **LGPL-3.0-or-later**.
-  Shipped as `app/src/main/assets/libtalloc.so.2` (a dynamic dependency of proot).
-  LGPL is satisfied by keeping the shared library under its own terms and providing relinking/
-  replacement rights per LGPL.
-- **Alpine Linux minirootfs** — an aggregate of its packages' licenses (musl **MIT**, BusyBox
-  **GPL-2.0**, etc.). Provided at runtime via the app's asset rootfs; each package retains its
-  own license. Not modified beyond configuration.
+    is derived from / adapted against OpenMinis, which is likewise GPL-3.0.
+    Combining it under GPL-3.0 is compatible; both source and license are preserved here.
+  - Earlier versions also adapted OpenMinis's Android PRoot + Alpine sandbox design. The
+    sandbox has been removed from this codebase (its former binaries and Linux rootfs are no
+    longer bundled or distributed); attribution is retained for the historical derivation.
 
 ## Third-party libraries (Gradle dependencies)
 

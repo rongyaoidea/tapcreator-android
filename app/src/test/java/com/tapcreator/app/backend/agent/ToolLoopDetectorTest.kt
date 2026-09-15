@@ -51,21 +51,30 @@ class ToolLoopDetectorTest {
 
     @Test
     fun `poll tool escalates to critical on frozen result`() {
-        val d = ToolLoopDetector()
-        val p = mapOf("command" to "ls /work/media")
-        repeat(5) { d.record("shell_execute", p, result = "waiting") }
-        val chk = d.check("shell_execute", p)
+        val d = ToolLoopDetector(ToolLoopConfig(pollTools = setOf("poll_tool")))
+        val p = mapOf("query" to "task status")
+        repeat(5) { d.record("poll_tool", p, result = "waiting") }
+        val chk = d.check("poll_tool", p)
         assertEquals(LoopLevel.CRITICAL, chk.level)
         assertNotNull(chk.message)
     }
 
     @Test
     fun `poll tool progress resets no-progress streak`() {
+        val d = ToolLoopDetector(ToolLoopConfig(pollTools = setOf("poll_tool")))
+        val p = mapOf("query" to "task status")
+        repeat(3) { d.record("poll_tool", p, result = "same") }
+        d.record("poll_tool", p, result = "changed") // 结果变化打断空转
+        assertEquals(LoopLevel.NONE, d.check("poll_tool", p).level)
+    }
+
+    @Test
+    fun `unknown tool is not treated as poll tool by default`() {
         val d = ToolLoopDetector()
-        val p = mapOf("command" to "cat log")
-        repeat(3) { d.record("shell_execute", p, result = "same") }
-        d.record("shell_execute", p, result = "changed") // 结果变化打断空转
-        assertEquals(LoopLevel.NONE, d.check("shell_execute", p).level)
+        val p = mapOf("command" to "ls")
+        repeat(5) { d.record("legacy_tool", p, result = "frozen") }
+        // 未声明为轮询工具：按普通工具走（未达 breaker=7 不熔断）
+        assertEquals(LoopLevel.NONE, d.check("legacy_tool", p).level)
     }
 
     @Test

@@ -31,6 +31,11 @@ data class ToolLoopConfig(
     val unknownToolThreshold: Int = 4,
     val criticalThreshold: Int = 5,
     val globalCircuitBreakerThreshold: Int = 7,
+    /**
+     * 具「轮询」语义的工具名（同参数+同结果反复调用属等待，需比普通工具更早 CRITICAL 熔断）。
+     * 沙箱下线后当前工具集无轮询工具，故默认空；保留机制供未来接入轮询类工具。
+     */
+    val pollTools: Set<String> = emptySet(),
 ) {
     init {
         require(warningThreshold > 0)
@@ -154,8 +159,8 @@ class ToolLoopDetector(private val config: ToolLoopConfig = ToolLoopConfig()) {
         return streak
     }
 
-    // tapcreator 无显式轮询工具；反复用 shell_execute 跑同一命令来等后台就绪即等价轮询。
-    private fun isPollTool(toolName: String): Boolean = toolName == "shell_execute"
+    // 轮询类工具由配置声明（当前工具集无轮询工具，默认为空集）。
+    private fun isPollTool(toolName: String): Boolean = toolName in config.pollTools
 
     private fun shouldEmitWarning(warningKey: String, currentCount: Int): Boolean {
         val bucket = currentCount / config.warningThreshold

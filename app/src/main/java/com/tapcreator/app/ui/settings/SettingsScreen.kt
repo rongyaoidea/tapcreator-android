@@ -72,7 +72,7 @@ fun SettingsScreen(
     // 进入设置页即自动发现：为已配置的空分辨率模型补全调研到的档位（幂等）
     LaunchedEffect(Unit) { vm.autoFillResolutions() }
 
-    // 子页面状态：null=入口列表，"models"=模型配置，"agent"=Agent设置，"alpine"=Alpine Linux
+    // 子页面状态：null=入口列表，"models"=模型配置，"agent"=Agent设置，"skills"=设计 Skill
     var subPage by remember { mutableStateOf<String?>(null) }
 
     if (subPage == null) {
@@ -117,11 +117,6 @@ fun SettingsScreen(
                 subtitle = "风格偏好与记忆系统",
             ) { subPage = "agent" }
             SettingsEntryRow(
-                icon = "[L]",
-                title = "Alpine Linux",
-                subtitle = "沙箱环境与已安装依赖",
-            ) { subPage = "alpine" }
-            SettingsEntryRow(
                 icon = "[S]",
                 title = "设计 Skill",
                 subtitle = "内置 ${com.tapcreator.app.data.model.BuiltinSkills.presets.size} 个 + 已安装 ${designCount} 个，风格创作指导",
@@ -143,7 +138,6 @@ fun SettingsScreen(
                     text = when (subPage) {
                         "models" -> "模型配置"
                         "agent" -> "Agent 设置"
-                        "alpine" -> "Alpine Linux"
                         "skills" -> "设计 Skill"
                         else -> "设置"
                     },
@@ -170,7 +164,6 @@ fun SettingsScreen(
                         }
                     }
                     "agent" -> AgentPrefsSection(vm)
-                    "alpine" -> AlpineSandboxSection(vm)
                     "skills" -> DesignSkillsSection(vm)
                 }
             }
@@ -229,73 +222,6 @@ private fun AppearanceSection(vm: SettingsViewModel) {
             }
             Switch(checked = dark, onCheckedChange = vm::setDarkTheme)
         }
-    }
-}
-
-/** Alpine 沙箱状态区：显示沙箱是否就绪 + 已安装的命令 */
-@Composable
-private fun AlpineSandboxSection(vm: SettingsViewModel) {
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
-        Text(
-            text = "Alpine 沙箱",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding),
-        )
-        Text(
-            text = "内置 Alpine Linux + PRoot 沙箱，Agent 的 ffmpeg 视频拼接、curl 搜索、python3 脚本在沙箱内执行。首次启动需联网安装包（约 30-60 秒）。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-        )
-        // 沙箱状态
-        Row(
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "沙箱状态：",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Text(
-                text = if (vm.sandboxReady) "已就绪" else "未启动",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (vm.sandboxReady) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-            )
-        }
-        Text(
-            text = "内置命令：ffmpeg（视频拼接/转码）、curl（联网）、python3（脚本执行）、grep/jq（文本处理）",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-        )
-        // 手动操作按钮
-        Row(
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            OutlinedButton(
-                enabled = !vm.sandboxBusy,
-                onClick = { vm.initSandbox() },
-            ) {
-                Text(if (vm.sandboxBusy) "处理中…" else "手动启动")
-            }
-            OutlinedButton(
-                enabled = !vm.sandboxBusy,
-                onClick = {
-                    // 确认重置
-                    vm.resetSandbox()
-                },
-            ) {
-                Text("重置沙箱", color = MaterialTheme.colorScheme.error)
-            }
-        }
-        Text(
-            text = "升级后沙箱无法启动时，点「重置沙箱」删除旧 rootfs 并重新解压启动。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 4.dp),
-        )
     }
 }
 

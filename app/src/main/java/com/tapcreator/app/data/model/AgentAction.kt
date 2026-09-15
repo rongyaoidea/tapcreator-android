@@ -76,16 +76,8 @@ data class AgentAction(
     val role: String? = null,
     /** apply_skill / uninstall_skill 的 skill id */
     val skill_id: String? = null,
-    /** shell_execute 的命令 */
+    /** mcp_add_server 的启动命令（stdio）或服务器 URL（http） */
     val command: String? = null,
-    /** shell_execute 的超时秒数 */
-    val timeout: Int? = null,
-    /** run_script 的脚本内容 */
-    val script_content: String? = null,
-    /** run_script 的语言：python/sh */
-    val language: String? = null,
-    /** install_package 的包名 */
-    val `package`: String? = null,
     /** mcp_add_server 的类型（stdio/http） */
     val type: String? = null,
     /** mcp_add_server 的参数（逗号分隔） */

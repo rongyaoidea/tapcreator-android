@@ -41,6 +41,15 @@ class AgentToolRegistryTest {
     }
 
     @Test
+    fun `sandbox tools are no longer offered`() {
+        val names = AgentToolRegistry.tools.map { it.name }.toSet()
+        // Linux 沙箱已下线：不得再向 Agent 暴露 shell/脚本/包管理工具
+        listOf("shell_execute", "run_script", "install_package").forEach {
+            assertFalse("沙箱下线后不应再暴露工具: $it", names.contains(it))
+        }
+    }
+
+    @Test
     fun `every tool has name desc and params list`() {
         AgentToolRegistry.tools.forEach { t ->
             assertTrue("工具 ${t.name} 缺 desc", t.desc.isNotBlank())

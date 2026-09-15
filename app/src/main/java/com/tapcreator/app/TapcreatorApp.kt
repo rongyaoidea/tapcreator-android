@@ -25,8 +25,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** 应用启动阶段（供 Splash/设置页观察沙箱预热进度） */
-enum class AppInitStage { IDLE, SEEDING, RECONCILING, PLUGINS, SANDBOX_WARMING, READY, FAILED }
+/** 应用启动阶段（供 Splash/设置页观察初始化进度） */
+enum class AppInitStage { IDLE, SEEDING, RECONCILING, PLUGINS, READY, FAILED }
 
 @HiltAndroidApp
 class TapcreatorApp : Application() {
@@ -36,9 +36,6 @@ class TapcreatorApp : Application() {
 
     @Inject
     lateinit var runService: RunService
-
-    @Inject
-    lateinit var sandbox: com.tapcreator.app.backend.sandbox.PRootSandbox
 
     @Inject
     lateinit var skillRegistry: com.tapcreator.app.backend.skill.SkillRegistry
@@ -58,7 +55,7 @@ class TapcreatorApp : Application() {
     override fun onCreate() {
         super.onCreate()
         installCrashLogger()
-        // 结构化并发启动：种子数据与插件并行，沙箱延迟预热，全程不阻塞首帧
+        // 结构化并发启动：种子数据与插件并行加载，全程不阻塞首帧
         _initStage.value = AppInitStage.SEEDING
         appScope.launch {
             runCatching {
@@ -74,12 +71,6 @@ class TapcreatorApp : Application() {
                     .onFailure { android.util.Log.w("TapcreatorApp", "reconcileStaleRuns 失败", it) }
                 runCatching { channels.autoFillAllResolutions() }
                     .onFailure { android.util.Log.w("TapcreatorApp", "autoFillAllResolutions 失败", it) }
-                _initStage.value = AppInitStage.SANDBOX_WARMING
-                // 沙箱预热最慢且非首屏必需：独立子协程，失败只打日志不影响 READY
-                launch {
-                    runCatching { sandbox.ensureReady() }
-                        .onFailure { android.util.Log.w("TapcreatorApp", "沙箱预热失败，Agent 搜索/拼接工具暂不可用", it) }
-                }
                 _initStage.value = AppInitStage.READY
             }.onFailure {
                 android.util.Log.e("TapcreatorApp", "应用初始化失败", it)

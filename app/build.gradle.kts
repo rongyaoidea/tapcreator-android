@@ -24,10 +24,6 @@ android {
         versionCode = 3
         versionName = "1.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        ndk {
-            // 沙箱 proot/loader/talloc 均为 arm64 专用；限定 ABI，非 arm64 设备明确拒绝安装而非安装后沙箱失效
-            abiFilters += listOf("arm64-v8a")
-        }
     }
 
     sourceSets {
@@ -85,12 +81,6 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-        // 沙箱的 proot/loader 是「可执行文件」而非 dlopen 库：AGP 默认 extractNativeLibs=false 时
-        // .so 不落盘 nativeLibraryDir 而由 linker 直接从 APK zip 加载，ProcessBuilder 将找不到文件。
-        // 必须落盘才能在 nativeLibraryDir 定位并 exec（参考 OpenMinis/OperitTerminalCore 同样显式开启）。
-        jniLibs {
-            useLegacyPackaging = true
         }
     }
 }

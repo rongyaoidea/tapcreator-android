@@ -113,11 +113,6 @@ object AgentToolRegistry {
                 Param("role", "string", "reference/parent，默认 reference"),
             )),
         Tool("layout_canvas", "重新整理本会话所有节点在画布上的网格布局（坐标持久化）。", emptyList()),
-        Tool("shell_execute", "在 Alpine 沙箱里执行任意 Linux 命令（ffmpeg/curl/python3/grep/jq 等）。用于视频处理、文件操作、安装包、运行脚本等。",
-            listOf(
-                Param("command", "string", "要执行的 shell 命令", true),
-                Param("timeout", "integer", "超时秒数，默认 30"),
-            )),
         Tool("list_skills", "列出所有可用的设计 Skill（内置预设 + 已安装的第三方 Skill），供选择风格。", emptyList()),
         Tool("apply_skill", "应用设计 Skill 到后续 generate：注入风格指导 prompt。photo 类需在 generate 时引用原图。",
             listOf(
@@ -134,13 +129,6 @@ object AgentToolRegistry {
         Tool("uninstall_skill", "删除一个用户安装的第三方 Skill（内置预设不可删）。",
             listOf(Param("skill_id", "string", "要删除的 Skill id", true))),
         Tool("finish", "结束本轮并把结果汇报给用户。", listOf(Param("summary", "string", "给用户的收尾文本"))),
-        Tool("run_script", "在沙箱里创建并执行一个脚本（Python/shell）。Agent 写好脚本内容，autosave 为临时文件后执行。",
-            listOf(
-                Param("script_content", "string", "脚本内容（Python 或 shell）", true),
-                Param("language", "string", "python 或 sh，默认 sh"),
-            )),
-        Tool("install_package", "在 Alpine 沙箱里安装一个软件包（apk add）。安装后可在 shell_execute 中使用。",
-            listOf(Param("package", "string", "包名（如 ffmpeg、curl、python3、nodejs 等）", true))),
         Tool("mcp_add_server", "注册一个 MCP 服务器。支持 stdio（子进程）和 http（远程）两种类型。注册后可用 mcp_list_tools 和 mcp_call_tool 调用其工具。",
             listOf(
                 Param("name", "string", "服务器名称（唯一标识）", true),

@@ -10,13 +10,13 @@
 
 ### 概述
 
-Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 Agent（ReAct Loop），以文本模型为大脑，反复「思考→行动→观察」，直至完成用户诉求。Agent 可调用多种工具：文本/图片/视频/音频生成、联网搜索、素材库管理、卡片 CRUD、记忆系统、设计 Skill 系统、Alpine Linux 沙箱（shell 执行/Python 脚本/包安装），以及 MCP 插件扩展。
+Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 Agent（ReAct Loop），以文本模型为大脑，反复「思考→行动→观察」，直至完成用户诉求。Agent 可调用多种工具：文本/图片/视频/音频生成、联网搜索、素材库管理、卡片 CRUD、记忆系统、设计 Skill 系统，以及 MCP 插件扩展。
 
 ### 功能特性
 
 - **自主 Agent**：ReAct Loop 架构，自动规划、执行、复盘、修正
 - **多模态生成**：文本、图片、视频、音频一键生成
-- **Alpine Linux 沙箱**：设备内 PRoot 沙箱，可执行 shell 命令、运行 Python 脚本、安装 apk 包
+- **原生工具链**：联网搜索/网页抓取（OkHttp）、设备端视频拼接（MediaMuxer + MediaExtractor）均为 Android 原生实现，无内置 Linux 沙箱、无外部二进制
 - **MCP 插件系统**：支持 stdio 子进程和 HTTP 远程两种 MCP 服务器
 - **联网搜索**：内置 Bing 搜索 + Python 解析，支持配置上游搜索 API
 - **记忆系统**：会话级持久化记忆，Agent 可自主 recall/memorize
@@ -36,13 +36,12 @@ Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 A
 | 数据库 | Room (SQLite) |
 | 网络 | OkHttp + Retrofit + kotlinx-serialization |
 | 图片 | Coil |
-| 视频 | ExoPlayer |
-| 沙箱 | PRoot (Alpine Linux) |
+| 视频 | ExoPlayer + MediaMuxer |
 | 构建 | Gradle KTS + AGP 8.5.2 |
 
 ### 版本
 
-**v1.1.0** — 新增 Alpine 沙箱、MCP 插件系统、设计 Skill 系统、RPM 限流器、多项 bug 修复
+**v1.2.0** — 移除 Alpine/PRoot 沙箱，搜索/抓取与视频拼接改为 Android 原生实现；新增 MCP 插件系统、设计 Skill 系统、RPM 限流器、多项 bug 修复
 
 ### 构建
 
@@ -56,13 +55,13 @@ Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 A
 
 ### Overview
 
-Tapcreator is an Android autonomous AI creation app. It features a built-in autonomous Agent (ReAct Loop) that uses a text model as its brain, repeatedly cycling through "Think → Act → Observe" until the user's request is fulfilled. The Agent can invoke various tools: text/image/video/audio generation, web search, asset library management, card CRUD, memory system, self-evolving skill system, Alpine Linux sandbox (shell execution/Python scripts/package installation), and MCP plugin extensions.
+Tapcreator is an Android autonomous AI creation app. It features a built-in autonomous Agent (ReAct Loop) that uses a text model as its brain, repeatedly cycling through "Think → Act → Observe" until the user's request is fulfilled. The Agent can invoke various tools: text/image/video/audio generation, web search, asset library management, card CRUD, memory system, self-evolving skill system, and MCP plugin extensions.
 
 ### Features
 
 - **Autonomous Agent**: ReAct Loop architecture with auto-planning, execution, review, and correction
 - **Multi-modal Generation**: One-click text, image, video, and audio generation
-- **Alpine Linux Sandbox**: On-device PRoot sandbox for shell commands, Python scripts, and apk package installation
+- **Native Toolchain**: Web search/fetch (OkHttp) and on-device video concatenation (MediaMuxer + MediaExtractor) are implemented natively — no bundled Linux sandbox or external binaries
 - **MCP Plugin System**: Supports stdio subprocess and HTTP remote MCP servers
 - **Web Search**: Built-in Bing search + Python parsing, with optional upstream search API
 - **Memory System**: Session-level persistent memory with Agent recall/memorize
@@ -82,13 +81,12 @@ Tapcreator is an Android autonomous AI creation app. It features a built-in auto
 | Database | Room (SQLite) |
 | Networking | OkHttp + Retrofit + kotlinx-serialization |
 | Images | Coil |
-| Video | ExoPlayer |
-| Sandbox | PRoot (Alpine Linux) |
+| Video | ExoPlayer + MediaMuxer |
 | Build | Gradle KTS + AGP 8.5.2 |
 
 ### Version
 
-**v1.1.0** — Alpine sandbox, MCP plugin system, design Skill system, RPM rate limiter, multiple bug fixes
+**v1.2.0** — Removed the Alpine/PRoot sandbox; search/fetch and video concatenation are now native Android implementations. Includes MCP plugin system, design Skill system, RPM rate limiter, and multiple bug fixes
 
 ### Build
 
@@ -107,9 +105,8 @@ of the **GNU General Public License as published by the Free Software Foundation
 version 3 of the License (GPL-3.0)**, or (at your option) any later version. See
 [LICENSE](LICENSE) for the full text.
 
-This project is derived from / bundles third-party components (OpenMinis under GPL-3.0;
-proot under GPL-2.0; talloc under LGPL-3.0; Alpine minirootfs aggregates) — see
-[NOTICE](NOTICE.md) for attribution and license details. Corresponding Source must be
+This project is derived from / bundles third-party components (OpenMinis under GPL-3.0) —
+see [NOTICE](NOTICE.md) for attribution and license details. Corresponding Source must be
 provided under GPL-3.0 when redistributing.
 
 Commercial use requires prior written authorization.

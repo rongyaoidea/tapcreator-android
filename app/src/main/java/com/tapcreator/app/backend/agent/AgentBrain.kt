@@ -2,6 +2,7 @@ package com.tapcreator.app.backend.agent
 
 import com.tapcreator.app.backend.model.ModelRouter
 import com.tapcreator.app.backend.providers.ProviderGateway
+import com.tapcreator.app.backend.search.NativeSearchTool
 import com.tapcreator.app.backend.service.ChannelRepository
 import com.tapcreator.app.backend.service.ContentService
 import com.tapcreator.app.backend.service.RunService
@@ -26,7 +27,6 @@ import com.tapcreator.app.data.model.ChatResponse
 import com.tapcreator.app.data.model.ThinkingLevel
 import com.tapcreator.app.data.model.ToolCall
 import java.io.File
-import java.net.URLEncoder
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -38,17 +38,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.OkHttpClient
-import okhttp3.Request
 
 /**
  * 真正的自主 Agent（ReAct Loop）：
  * 以文本模型为大脑，反复「思考→行动→观察」，直至达成用户诉求或显式 finish。
  *  - 工具调用：generate（文本/图片/视频/音频，经 RunService 落为卡片）、卡片读写/改删、
- *    素材库整理（移动/删除素材、建/删文件夹 + ContentService 引用感知删除）、memorize、recall
+ *    素材库整理（移动/删除素材、建/删文件夹 + ContentService 引用感知删除）、memorize、recall、
+ *    联网搜索与网页抓取（经 NativeSearchTool，原生 OkHttp，无需 Linux 沙箱）
  *  - 卡片编排：每步生成一张卡并写入 reference 边，关系图形成完整链路
  *  - 记忆系统：会话级持久化记忆记忆 + recall 检索，注入上下文供后续回合使用
  *  - 视频生成：generate(GENERATE_VIDEO)，可用 reference 引用上文图片/视频续写
@@ -61,9 +57,7 @@ class AgentBrain @Inject constructor(
     private val gateway: ProviderGateway,
     private val runService: RunService,
     private val contentService: ContentService,
-    private val http: OkHttpClient,
-    private val sandboxSearch: com.tapcreator.app.backend.sandbox.SandboxSearchTool,
-    private val sandbox: com.tapcreator.app.backend.sandbox.PRootSandbox,
+    private val searchTool: NativeSearchTool,
     private val skillRegistry: com.tapcreator.app.backend.skill.SkillRegistry,
     private val mcpManager: com.tapcreator.app.backend.mcp.MCPManager,
     private val rateLimiter: com.tapcreator.app.backend.RateLimiter,
@@ -780,31 +774,22 @@ class AgentBrain @Inject constructor(
                     st.trace += ChatMessage("user", "[工具错误] web_search 需提供 query。")
                     return ActionOutcome.CONTINUE
                 }
-                // 优先用沙箱搜索（curl+Python DuckDuckGo+BeautifulSoup，更健壮）；失败回退 OkHttp+Bing
-                val sandboxResults = runCatching {
-                    withTimeout(TOOL_TIMEOUT_MS) { sandboxSearch.search(q) }
-                }.getOrNull()
-                if (sandboxResults != null && sandboxResults.isNotEmpty()) {
-                    st.trace += ChatMessage("user", "[观察] 搜索「$q」：\n" + sandboxResults.joinToString("\n") {
+                // 原生搜索（OkHttp + 配置 API / Bing HTML），无需沙箱
+                val results = try {
+                    withTimeout(TOOL_TIMEOUT_MS) { searchTool.search(q) }
+                } catch (e: TimeoutCancellationException) {
+                    st.trace += ChatMessage("user", "[工具错误] 联网搜索「$q」超时（${TOOL_TIMEOUT_MS / 1000}s）。可换关键词或改用 fetch_url。")
+                    return ActionOutcome.CONTINUE
+                } catch (e: Exception) {
+                    st.trace += ChatMessage("user", "[工具错误] 联网搜索「$q」失败：${e.message}。可换关键词重试或改用 fetch_url。")
+                    return ActionOutcome.CONTINUE
+                }
+                if (results.isEmpty()) {
+                    st.trace += ChatMessage("user", "[观察] 未搜索到「$q」的相关结果。")
+                } else {
+                    st.trace += ChatMessage("user", "[观察] 搜索「$q」：\n" + results.joinToString("\n") {
                         "- ${it.title}\n  ${it.url}"
                     })
-                } else {
-                    // 回退：OkHttp + Bing HTML 正则（沙箱不可用或无结果时）
-                    val outcome = try {
-                        withTimeout(TOOL_TIMEOUT_MS) { webSearch(q) }
-                    } catch (e: TimeoutCancellationException) {
-                        st.trace += ChatMessage("user", "[工具错误] 联网搜索「$q」超时（${TOOL_TIMEOUT_MS / 1000}s）。可换关键词或改用 fetch_url。")
-                        return ActionOutcome.CONTINUE
-                    }
-                    when {
-                        outcome.error != null ->
-                            st.trace += ChatMessage("user", "[工具错误] 联网搜索「$q」失败：${outcome.error}。可换关键词重试或改用 fetch_url。")
-                        outcome.items.isEmpty() ->
-                            st.trace += ChatMessage("user", "[观察] 未搜索到「$q」的相关结果。")
-                        else -> st.trace += ChatMessage("user", "[观察] 搜索「$q」：\n" + outcome.items.joinToString("\n") {
-                            "- ${it.first}\n  ${it.second}"
-                        })
-                    }
                 }
             }
             "fetch_url" -> {
@@ -813,15 +798,14 @@ class AgentBrain @Inject constructor(
                     st.trace += ChatMessage("user", "[工具错误] fetch_url 仅支持 http/https 链接。")
                     return ActionOutcome.CONTINUE
                 }
-                // 优先用沙箱抓取（curl+Python 正文提取）；失败回退 OkHttp+手写 HTML 清理
-                val sandboxText = runCatching {
-                    withTimeout(TOOL_TIMEOUT_MS) { sandboxSearch.fetchText(u) }
-                }.getOrNull()
-                val text = if (!sandboxText.isNullOrBlank()) sandboxText else try {
-                    withTimeout(TOOL_TIMEOUT_MS) { fetchWebText(u) }
+                // 原生抓取（OkHttp + HTML 清理），无需沙箱
+                val text = try {
+                    withTimeout(TOOL_TIMEOUT_MS) { searchTool.fetchText(u) }
                 } catch (e: TimeoutCancellationException) {
                     st.trace += ChatMessage("user", "[工具错误] 读取网页 $u 超时（${TOOL_TIMEOUT_MS / 1000}s）。")
                     return ActionOutcome.CONTINUE
+                } catch (_: Exception) {
+                    ""
                 }
                 if (text.isEmpty()) {
                     st.trace += ChatMessage("user", "[观察] 未能读取 $u（无正文或访问失败）。")
@@ -962,72 +946,10 @@ class AgentBrain @Inject constructor(
                     st.trace += ChatMessage("user", "[观察] 未找到可删除的第三方 Skill「$id」（内置预设不可删）。")
                 }
             }
-            "shell_execute" -> {
-                val cmd = action.command?.trim()?.takeIf { it.isNotBlank() }
-                if (cmd == null) {
-                    st.trace += ChatMessage("user", "[工具错误] shell_execute 需提供 command。")
-                    return ActionOutcome.CONTINUE
-                }
-                val timeoutMs = (action.timeout ?: 30) * 1000L
-                // 确保沙箱就绪，并尝试安装基础包（网络可达时自动安装 curl/python3/ffmpeg）
-                runCatching { sandbox.ensureReady() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] ${e.message}") }
-                runCatching { sandbox.ensureBasePackages() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] 基础包安装失败：${e.message}") }
-                val result = try {
-                    sandbox.exec(cmd, timeoutMs = timeoutMs)
-                } catch (e: Exception) {
-                    st.trace += ChatMessage("user", "[工具错误] 沙箱执行失败：${e.message}。可重试或换一种方式。")
-                    return ActionOutcome.CONTINUE
-                }
-                if (result.isSuccess) {
-                    val out = result.output.take(2000)
-                    st.trace += ChatMessage("user", "[观察] 命令执行成功（exit=0）：\n$out${if (result.output.length > 2000) "\n…（已截断）" else ""}")
-                } else {
-                    val out = result.output.take(2000)
-                    st.trace += ChatMessage("user", "[观察] 命令执行失败（exit=${result.exitCode}）：\n$out${if (result.output.length > 2000) "\n…（已截断）" else ""}")
-                }
-            }
-            "run_script" -> {
-                val content = action.script_content?.trim()?.takeIf { it.isNotBlank() }
-                if (content == null) {
-                    st.trace += ChatMessage("user", "[工具错误] run_script 需提供 content（脚本内容）。")
-                    return ActionOutcome.CONTINUE
-                }
-                val lang = action.language?.trim()?.lowercase()?.takeIf { it in setOf("python", "sh") } ?: "sh"
-                val ext = if (lang == "python") "py" else "sh"
-                val scriptName = "agent_script_${System.nanoTime()}.$ext"
-                runCatching { sandbox.ensureReady() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] ${e.message}") }
-                runCatching { sandbox.ensureBasePackages() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] 基础包安装失败：${e.message}") }
-                // 写入脚本到沙箱 media 目录
-                val writeCmd = "cat > /work/media/$scriptName << 'EOF'\n$content\nEOF"
-                val writeResult = sandbox.exec(writeCmd, timeoutMs = 10_000L)
-                if (!writeResult.isSuccess) {
-                    st.trace += ChatMessage("user", "[工具错误] 无法写入脚本文件。")
-                    return ActionOutcome.CONTINUE
-                }
-                sandbox.exec("chmod +x /work/media/$scriptName", timeoutMs = 5_000L)
-                val interpreter = if (lang == "python") "python3" else "sh"
-                val result = sandbox.exec("$interpreter /work/media/$scriptName", timeoutMs = 60_000L)
-                val out = result.output.take(2000)
-                if (result.isSuccess) {
-                    st.trace += ChatMessage("user", "[观察] 脚本执行成功（exit=0）：\n$out${if (result.output.length > 2000) "\n…（已截断）" else ""}")
-                } else {
-                    st.trace += ChatMessage("user", "[观察] 脚本执行失败（exit=${result.exitCode}）：\n$out${if (result.output.length > 2000) "\n…（已截断）" else ""}")
-                }
-            }
-            "install_package" -> {
-                val pkg = action.`package`?.trim()?.takeIf { it.isNotBlank() }
-                if (pkg == null) {
-                    st.trace += ChatMessage("user", "[工具错误] install_package 需提供 package（包名）。")
-                    return ActionOutcome.CONTINUE
-                }
-                runCatching { sandbox.ensureReady() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] ${e.message}") }
-                runCatching { sandbox.ensureBasePackages() }.onFailure { e -> st.trace += ChatMessage("user", "[沙箱告警] 基础包安装失败：${e.message}") }
-                val result = sandbox.installPackage(pkg)
-                if (result.isSuccess) {
-                    st.trace += ChatMessage("user", "[观察] 已安装包「$pkg」。可在 shell_execute 中使用。")
-                } else {
-                    st.trace += ChatMessage("user", "[观察] 安装包「$pkg」失败（exit=${result.exitCode}）：${result.output.take(300)}")
-                }
+            "shell_execute", "run_script", "install_package" -> {
+                // 沙箱已整体下线（不再内置 Alpine/PRoot）：这三个动作从工具表中移除，
+                // 旧模型/旧上下文若仍输出它们，统一按「动作不可用」回灌并由 LoopDetector 计数。
+                st.trace += ChatMessage("user", "[动作错误] 未知动作：${action.action}。本 App 不提供 Linux 沙箱与包管理器，请改用 web_search/fetch_url、generate 或卡片/素材库操作。")
             }
             "layout_canvas" -> {
                 val cards = db.cardDao().listByConversation(ctx.conversationId)
@@ -1327,93 +1249,6 @@ class AgentBrain @Inject constructor(
             else -> sourceKind == MediaKind.IMAGE || sourceKind == MediaKind.VIDEO
         }
 
-    /** 联网搜索的结果：error 非空表示失败原因（用于回灌给 Agent，而非吞成无结果）；items 为标题+链接 */
-    private class SearchOutcome(val error: String?, val items: List<Pair<String, String>>)
-
-    /** 联网搜索（国内可访问的必应无 key 端点，轻量解析标题与链接；循环读取截止到上限，不依赖单次 socket read） */
-    private suspend fun webSearch(query: String): SearchOutcome = withContext(Dispatchers.IO) {
-        try {
-            val endpoint = "https://cn.bing.com/search?q=" + URLEncoder.encode(query, "UTF-8")
-            var code = 0
-            var html = ""
-            http.newCall(webRequest(endpoint)).execute().use { resp ->
-                code = resp.code
-                html = readCapped(resp, 1024 * 1024)
-            }
-            if (code !in 200..299) SearchOutcome("搜索服务返回 HTTP $code", emptyList())
-            else if (html.isBlank()) SearchOutcome("搜索服务返回空页，可能被反爬拦截", emptyList())
-            else {
-                val results = mutableListOf<Pair<String, String>>()
-                for (block in html.split("class=\"b_algo\"").drop(1)) {
-                    if (results.size >= 6) break
-                    val title = Regex("<h2[^>]*>\\s*<a[^>]*>(.*?)</a>\\s*</h2>").find(block)
-                        ?.groupValues?.getOrNull(1)?.let { decodeTitle(it) }
-                    val href = Regex("<h2[^>]*>\\s*<a[^>]*href=\"([^\"]+)\"").find(block)
-                        ?.groupValues?.getOrNull(1)
-                    if (title != null && href?.startsWith("http") == true) results += title to href
-                }
-                SearchOutcome(null, results)
-            }
-        } catch (t: Throwable) {
-            SearchOutcome(t.message ?: "未知网络错误", emptyList())
-        }
-    }
-
-    /** 读取响应体到上限字节，循环读完避免 socket 分块导致截断；整块解码规避多字节字符被切断 */
-    private fun readCapped(resp: okhttp3.Response, cap: Int): String {
-        val bytes = java.io.ByteArrayOutputStream()
-        resp.body?.byteStream()?.use { ins ->
-            val buf = ByteArray(64 * 1024)
-            var total = 0
-            var n = ins.read(buf)
-            while (n > 0 && total < cap) {
-                bytes.write(buf, 0, n)
-                total += n
-                n = ins.read(buf)
-            }
-        }
-        return bytes.toString("UTF-8")
-    }
-
-    /** 去除标题内残留的 <strong>/<b> 等标签并解码 HTML 实体 */
-    private fun decodeTitle(raw: String): String =
-        decodeEntities(Regex("<[^>]+>").replace(raw, " ").replace(Regex("\\s+"), " ").trim())
-
-    /** 抓取网页正文并转纯文本（循环读取上限 512KB，防止超大页 OOM；供 Agent 参考链接内容） */
-    private suspend fun fetchWebText(url: String): String = withContext(Dispatchers.IO) {
-        try {
-            http.newCall(webRequest(url)).execute().use { resp ->
-                if (resp.code !in 200..299) "" else htmlToText(readCapped(resp, 512 * 1024))
-            }
-        } catch (t: Throwable) {
-            ""
-        }
-    }
-
-    private fun webRequest(url: String) = Request.Builder()
-        .url(url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36")
-        .build()
-
-    private fun htmlToText(html: String): String = decodeEntities(
-        html
-            .replace(Regex("(?is)<script[^>]*>.*?</script>"), " ")
-            .replace(Regex("(?is)<style[^>]*>.*?</style>"), " ")
-            .replace(Regex("(?i)<br\\s*/?>|</p>|</div>|</h[1-6]>|</li>|<li>"), "\n")
-            .replace(Regex("<[^>]+>"), " ")
-            .replace(Regex("[\\s\\u00a0]+"), " ")
-            .trim()
-    )
-
-    private fun decodeEntities(s: String) = s
-        .replace("&amp;", "&").replace("&nbsp;", " ")
-        .replace("&lt;", "<").replace("&gt;", ">")
-        .replace("&quot;", "\"").replace("&#39;", "'").replace("&#x27;", "'")
-        .replace("&apos;", "'").replace("&ldquo;", "“").replace("&rdquo;", "”")
-        .replace("&lsquo;", "‘").replace("&rsquo;", "’").replace("&ndash;", "–")
-        .replace("&mdash;", "—").replace("&hellip;", "…").replace("&ensp;", " ")
-        .replace("&emsp;", " ")
-
     internal fun parseAction(raw: String): AgentAction? = runCatching {
         json.decodeFromString<AgentAction>(raw)
     }.getOrNull()
@@ -1587,7 +1422,6 @@ private suspend fun handleBrainCallFailure(
         put("title", action.title); put("content", action.content); put("memory", action.memory)
         put("run_id", action.run_id); put("from_card_id", action.from_card_id); put("to_card_id", action.to_card_id)
         put("role", action.role); put("skill_id", action.skill_id); put("command", action.command)
-        put("script_content", action.script_content); put("language", action.language); put("package", action.`package`)
         put("server", action.server); put("arguments", action.arguments); put("name", action.name)
         put("category", action.category); put("prompt_guide", action.prompt_guide)
         return m

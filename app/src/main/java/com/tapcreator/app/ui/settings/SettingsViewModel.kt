@@ -34,7 +34,6 @@ class SettingsViewModel @Inject constructor(
     private val channels: ChannelRepository,
     private val settings: SettingsStore,
     private val mcpManager: com.tapcreator.app.backend.mcp.MCPManager,
-    private val sandbox: com.tapcreator.app.backend.sandbox.PRootSandbox,
     private val skillRegistry: com.tapcreator.app.backend.skill.SkillRegistry,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
@@ -81,54 +80,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /** 沙箱状态 */
-    var sandboxReady by mutableStateOf(false)
-        private set
-    var sandboxBusy by mutableStateOf(false)
-        private set
-
     init {
         viewModelScope.launch {
             agentMemoryEnabled = settings.agentMemoryEnabledValue()
             agentStyle = settings.agentStyleValue()
             mcpManager.init()
             mcpServers.value = mcpManager.listServers()
-            sandboxReady = sandbox.isReady()
-        }
-    }
-
-    /** 手动初始化沙箱（解压+启动） */
-    fun initSandbox() {
-        if (sandboxBusy) return
-        sandboxBusy = true
-        viewModelScope.launch {
-            try {
-                sandbox.ensureReady()
-                sandboxReady = sandbox.isReady()
-                toast(if (sandboxReady) "沙箱已就绪" else "沙箱启动失败")
-            } catch (e: Exception) {
-                toast("沙箱启动失败：${e.message}")
-            } finally {
-                sandboxBusy = false
-            }
-        }
-    }
-
-    /** 重置沙箱（删除 rootfs + 重新解压启动） */
-    fun resetSandbox() {
-        if (sandboxBusy) return
-        sandboxBusy = true
-        viewModelScope.launch {
-            try {
-                sandbox.reset()
-                sandbox.ensureReady()
-                sandboxReady = sandbox.isReady()
-                toast(if (sandboxReady) "沙箱已重置并就绪" else "沙箱重置后启动失败")
-            } catch (e: Exception) {
-                toast("沙箱重置失败：${e.message}")
-            } finally {
-                sandboxBusy = false
-            }
         }
     }
 
