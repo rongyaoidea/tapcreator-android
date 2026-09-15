@@ -21,8 +21,8 @@ android {
         // 7.x 设备 2026 年占比 <2%，不再值得用版本分支+desugar 维护。
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // 沙箱 proot/loader/talloc 均为 arm64 专用；限定 ABI，非 arm64 设备明确拒绝安装而非安装后沙箱失效
