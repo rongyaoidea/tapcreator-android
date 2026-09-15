@@ -354,6 +354,12 @@ private fun AgentPrefsSection(vm: SettingsViewModel) {
                 .fillMaxWidth()
                 .padding(horizontal = Dimens.PagePadding, vertical = 8.dp),
         ) { Text("从市场安装 MCP 工具") }
+        Text(
+            text = "市场仅收录 HTTP 远程 MCP；Android 无 Node.js，npx 类 stdio 服务不可用（可用 Agent 的 mcp_add_server 注册设备上可执行的程序）。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Dimens.PagePadding, vertical = 2.dp),
+        )
 
         if (showMarket) {
             McpMarketDialog(

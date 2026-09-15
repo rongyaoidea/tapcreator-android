@@ -35,7 +35,7 @@ data class MCPServer(
     val name: String,
     /** "stdio" = 子进程（command 为可执行路径）；"http" = 远程 HTTP（url 为端点） */
     val type: String,
-    /** stdio 类型：启动命令；http 类型：base URL */
+    /** stdio 类型：启动命令（须为设备上可执行的程序）；http 类型：Streamable HTTP 端点（完整 URL 或主机根，见 [endpointUrl]） */
     val command: String = "",
     /** 命令参数列表（stdio 类型） */
     val args: List<String> = emptyList(),
@@ -129,6 +129,18 @@ class MCPManager @Inject constructor(
         const val PROTOCOL_VERSION = "2024-11-05"
         const val CLIENT_NAME = "tapcreator"
         const val CLIENT_VERSION = "1.0"
+
+        /**
+         * 求 Streamable HTTP 的实际端点 URL（标准路径 /mcp）：
+         *  - 已是完整端点（含路径，如 https://mcp.deepwiki.com/mcp、https://learn.microsoft.com/api/mcp）→ 原样使用；
+         *  - 仅给主机根（如 https://abc.workers.dev）→ 补 /mcp，兼容既有「只填 base」的配置。
+         */
+        internal fun endpointUrl(configured: String): String {
+            val trimmed = configured.trim().trimEnd('/')
+            if (trimmed.isEmpty()) return ""
+            val path = runCatching { java.net.URI(trimmed).path }.getOrNull().orEmpty()
+            return if (path.isBlank() || path == "/") "$trimmed/mcp" else trimmed
+        }
     }
 
     /** 初始化：从 DataStore 恢复已注册的 MCP 服务器列表 */
@@ -366,7 +378,7 @@ class MCPManager @Inject constructor(
     private suspend fun httpRequest(server: MCPServer, body: JsonObject): JsonObject =
         withContext(Dispatchers.IO) {
             val isInit = body["method"]?.jsonPrimitive?.content == "initialize"
-            val url = java.net.URL("${server.url}/mcp")
+            val url = java.net.URL(endpointUrl(server.url))
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")

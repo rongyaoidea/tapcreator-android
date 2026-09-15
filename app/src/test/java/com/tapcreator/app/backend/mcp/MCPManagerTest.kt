@@ -188,4 +188,30 @@ class MCPManagerTest {
         assertTrue(server.env.isEmpty())
         assertNull(server.process)
     }
+
+    // ============ endpointUrl：Streamable HTTP 端点归一 ============
+
+    @Test
+    fun `endpointUrl appends mcp when only host is configured`() {
+        assertEquals("https://abc.workers.dev/mcp", MCPManager.endpointUrl("https://abc.workers.dev"))
+        assertEquals("https://abc.workers.dev/mcp", MCPManager.endpointUrl("https://abc.workers.dev/"))
+    }
+
+    @Test
+    fun `endpointUrl keeps full endpoint untouched`() {
+        assertEquals("https://mcp.deepwiki.com/mcp", MCPManager.endpointUrl("https://mcp.deepwiki.com/mcp"))
+        assertEquals("https://learn.microsoft.com/api/mcp", MCPManager.endpointUrl("https://learn.microsoft.com/api/mcp"))
+        assertEquals("https://mcp.context7.com/mcp", MCPManager.endpointUrl("https://mcp.context7.com/mcp"))
+    }
+
+    @Test
+    fun `endpointUrl trims trailing slash on full endpoint`() {
+        assertEquals("https://mcp.deepwiki.com/mcp", MCPManager.endpointUrl("https://mcp.deepwiki.com/mcp/"))
+    }
+
+    @Test
+    fun `endpointUrl handles blank input`() {
+        assertEquals("", MCPManager.endpointUrl(""))
+        assertEquals("", MCPManager.endpointUrl("   "))
+    }
 }

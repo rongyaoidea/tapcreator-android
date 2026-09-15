@@ -133,9 +133,9 @@ object AgentToolRegistry {
             listOf(
                 Param("name", "string", "服务器名称（唯一标识）", true),
                 Param("type", "string", "服务器类型：stdio（子进程）或 http（远程）", true),
-                Param("command", "string", "stdio 类型时：启动命令；http 类型时：服务器 URL"),
+                Param("command", "string", "stdio 类型时：启动命令（须为设备上可执行的程序）；http 类型时：Streamable HTTP 端点完整 URL（如 https://mcp.deepwiki.com/mcp）"),
                 Param("args", "string", "命令参数，逗号分隔（仅 stdio 类型）"),
-                Param("env", "string", "环境变量，JSON 格式（如 {\"API_KEY\":\"xxx\"}）"),
+                Param("env", "string", "环境变量 / HTTP 请求头，JSON 格式（如 {\"API_KEY\":\"xxx\"}）"),
             )),
         Tool("mcp_remove_server", "删除一个已注册的 MCP 服务器。",
             listOf(Param("name", "string", "服务器名称", true))),
