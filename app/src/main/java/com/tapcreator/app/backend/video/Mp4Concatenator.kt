@@ -91,7 +91,17 @@ object Mp4Concatenator {
             while (true) {
                 val size = ex.readSampleData(buffer, 0)
                 if (size < 0) break
-                info.set(0, size, ex.sampleTime + offsetUs, ex.sampleFlags)
+                // sampleFlags（SAMPLE_FLAG_*）与 BufferInfo（BUFFER_FLAG_*）数值含义不同，
+                // 不可直传：SAMPLE encrypted=2 会被误读为 CODEC_CONFIG，partial=4 会被误读为 EOS 导致截断。
+                // 仅映射语义对等的位；加密样本 MediaMuxer 本就无法透传，按普通帧处理。
+                var flags = 0
+                if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+                    flags = flags or MediaCodec.BUFFER_FLAG_KEY_FRAME
+                }
+                if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME != 0) {
+                    flags = flags or MediaCodec.BUFFER_FLAG_PARTIAL_FRAME
+                }
+                info.set(0, size, ex.sampleTime + offsetUs, flags)
                 muxer.writeSampleData(trackIndex, buffer, info)
                 if (!ex.advance()) break
             }

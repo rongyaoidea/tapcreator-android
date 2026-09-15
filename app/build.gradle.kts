@@ -16,7 +16,10 @@ android {
 
     defaultConfig {
         applicationId = "com.tapcreator.app"
-        minSdk = 24
+        // minSdk 26（Android 8.0）：代码广泛使用 API 26+（Base64/nio/NotificationChannel/
+        // startForegroundService/Process.isAlive），升到 26 可删掉全部 NewApi 分支；
+        // 7.x 设备 2026 年占比 <2%，不再值得用版本分支+desugar 维护。
+        minSdk = 26
         targetSdk = 34
         versionCode = 2
         versionName = "1.1.0"
