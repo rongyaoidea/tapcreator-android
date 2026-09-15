@@ -41,7 +41,7 @@ Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 A
 
 ### 版本
 
-**v1.2.0** — 移除 Alpine/PRoot 沙箱，搜索/抓取与视频拼接改为 Android 原生实现；新增 MCP 插件系统、设计 Skill 系统、RPM 限流器、多项 bug 修复
+**v1.3.0** — 移除 Alpine/PRoot 沙箱（搜索/抓取与视频拼接改为 Android 原生）；MCP 市场改为可直接使用的 HTTP 远程服务器并新增 `mcp_market` 工具；提示词输入框可唤出 Agent 调用设计 Skill 扩写提示词；补充多项 Material 3 动效
 
 ### 构建
 
@@ -86,7 +86,7 @@ Tapcreator is an Android autonomous AI creation app. It features a built-in auto
 
 ### Version
 
-**v1.2.0** — Removed the Alpine/PRoot sandbox; search/fetch and video concatenation are now native Android implementations. Includes MCP plugin system, design Skill system, RPM rate limiter, and multiple bug fixes
+**v1.3.0** — Removed the Alpine/PRoot sandbox (search/fetch and video concatenation are now native Android); MCP market now ships ready-to-use HTTP remote servers with a new `mcp_market` agent tool; the prompt input can summon the Agent to expand a prompt via a design Skill; added more Material 3 motion
 
 ### Build
 
