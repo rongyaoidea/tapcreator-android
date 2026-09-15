@@ -1,6 +1,5 @@
 package com.tapcreator.app.ui.components
 
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,13 +29,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.google.android.exoplayer2.ExoPlayer
-import com.google.android.exoplayer2.MediaItem
-import com.google.android.exoplayer2.Player
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import java.io.File
 
 /**
- * 本地音频播放条（无 UA 额外依赖，复用 ExoPlayer）。
+ * 本地音频播放条（无 UA 额外依赖，复用 Media3 ExoPlayer）。
  * 用于聊天卡片 / 素材库中音频素材的预览播放。
  */
 @Composable
@@ -46,9 +48,10 @@ fun AudioThumb(
     autoPlay: Boolean = false,
 ) {
     val context = LocalContext.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val player = remember(file.absolutePath) {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+            setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file)))
             repeatMode = Player.REPEAT_MODE_OFF
             volume = 1f
             playWhenReady = autoPlay
@@ -56,13 +59,18 @@ fun AudioThumb(
         }
     }
     var playing by remember(file.absolutePath) { mutableStateOf(autoPlay) }
-    DisposableEffect(player) {
+    DisposableEffect(player, lifecycle) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
         }
+        val lifecycleObserver = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) player.pause()
+        }
         player.addListener(listener)
+        lifecycle.addObserver(lifecycleObserver)
         onDispose {
             player.removeListener(listener)
+            lifecycle.removeObserver(lifecycleObserver)
             player.release()
         }
     }

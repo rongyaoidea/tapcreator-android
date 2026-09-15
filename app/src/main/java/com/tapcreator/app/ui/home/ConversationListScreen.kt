@@ -34,7 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,8 +54,8 @@ fun ConversationListScreen(
     onSettings: () -> Unit,
     onLibrary: () -> Unit,
 ) {
-    val conversations by vm.conversations.collectAsState()
-    val needsSetup by vm.needsSetup.collectAsState()
+    val conversations by vm.conversations.collectAsStateWithLifecycle()
+    val needsSetup by vm.needsSetup.collectAsStateWithLifecycle()
     var revealed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { revealed = true }
 
@@ -213,6 +213,10 @@ private fun groupByRelativeTime(conversations: List<ConversationEntity>): List<P
 }
 
 /** 相对时间描述：刚刚/2小时前/昨天 HH:mm/MM-dd/yyyy-MM-dd */
+private val timeFmtHM = ThreadLocal.withInitial { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
+private val timeFmtMD = ThreadLocal.withInitial { java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()) }
+private val timeFmtYMD = ThreadLocal.withInitial { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()) }
+
 private fun relativeTime(epoch: Long): String {
     val now = System.currentTimeMillis()
     val diff = now - epoch
@@ -223,7 +227,7 @@ private fun relativeTime(epoch: Long): String {
         else -> {
             val target = java.util.Calendar.getInstance().apply { timeInMillis = epoch }
             val nowCal = java.util.Calendar.getInstance()
-            val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+            val timeFmt = timeFmtHM.get()
             val isSameDay = nowCal.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
                 nowCal.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
             val isYesterday = nowCal.get(java.util.Calendar.DAY_OF_YEAR) - target.get(java.util.Calendar.DAY_OF_YEAR) == 1 &&
@@ -232,8 +236,8 @@ private fun relativeTime(epoch: Long): String {
                 isSameDay -> "今天 ${timeFmt.format(target.time)}"
                 isYesterday -> "昨天 ${timeFmt.format(target.time)}"
                 nowCal.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) ->
-                    java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()).format(target.time)
-                else -> java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(target.time)
+                    timeFmtMD.get().format(target.time)
+                else -> timeFmtYMD.get().format(target.time)
             }
         }
     }

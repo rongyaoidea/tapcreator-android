@@ -29,7 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,9 +64,9 @@ private val KIND_HINT = mapOf(
 fun SettingsScreen(
     vm: SettingsViewModel = hiltViewModel(),
 ) {
-    val byKind by vm.modelsByKind.collectAsState()
-    val channelList by vm.channelList.collectAsState()
-    val designSkills by vm.designSkills.collectAsState()
+    val byKind by vm.modelsByKind.collectAsStateWithLifecycle()
+    val channelList by vm.channelList.collectAsStateWithLifecycle()
+    val designSkills by vm.designSkills.collectAsStateWithLifecycle()
     val designCount = designSkills.count { !it.builtIn }
 
     // 进入设置页即自动发现：为已配置的空分辨率模型补全调研到的档位（幂等）
@@ -205,7 +205,7 @@ private fun SettingsEntryRow(
 /** 外观设置区：深色模式开关（自原「我的」页面迁移而来） */
 @Composable
 private fun AppearanceSection(vm: SettingsViewModel) {
-    val dark by vm.darkTheme.collectAsState()
+    val dark by vm.darkTheme.collectAsStateWithLifecycle()
     Column(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
         Text(
             text = "外观",
@@ -922,7 +922,7 @@ private fun AddKindDialog(kind: MediaKind, label: String, vm: SettingsViewModel,
 /** 设计 Skill 列表：内置预设 + 用户安装。展示分类/来源/描述/建议比例，非内置项可删除。 */
 @Composable
 private fun DesignSkillsSection(vm: SettingsViewModel) {
-    val skills by vm.designSkills.collectAsState()
+    val skills by vm.designSkills.collectAsStateWithLifecycle()
     val categoryLabel = mapOf("photo" to "照片重塑", "poster" to "氛围海报", "video" to "视频创作")
     var showEditor by remember { mutableStateOf(false) }
     var editingSkill by remember { mutableStateOf<com.tapcreator.app.data.model.DesignSkill?>(null) }

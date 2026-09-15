@@ -152,4 +152,68 @@ class AppDatabaseTest {
         // 清理
         ApplicationProvider.getApplicationContext<Context>().deleteDatabase(name)
     }
+
+    /** 验证 15→16 自动迁移（新增高频查询索引）不丢数据且索引生效 */
+    @Test
+    fun migrate15To16_autoIndexes() {
+        val name = "migration15to16"
+        migrationTestHelper.createDatabase(name, 15).apply {
+            execSQL(
+                "INSERT INTO cards (id, runId, conversationId, sequence, kind, title, content, status, x, y, deleted, promptEnhanced) " +
+                    "VALUES ('c1','r1','conv1',1,'IMAGE','t','','COMPLETED',0,0,0,0)"
+            )
+            close()
+        }
+        val migrated: SupportSQLiteDatabase = migrationTestHelper.runMigrationsAndValidate(
+            name, 16, true,
+        )
+        // 数据保留
+        migrated.query("SELECT COUNT(*) FROM cards").use { c ->
+            c.moveToFirst()
+            assertEquals(1, c.getInt(0))
+        }
+        // 索引存在：cards(conversationId) / agent_runs(status) / card_links(toCardId)
+        val indexes = mutableListOf<String>()
+        migrated.query("SELECT name, tbl_name FROM sqlite_master WHERE type='index'").use { c ->
+            val nameIdx = c.getColumnIndex("name")
+            while (c.moveToNext()) indexes += c.getString(nameIdx)
+        }
+        migrated.close()
+        assertEquals(true, indexes.any { it.contains("cards") || it.contains("conversationId") })
+        ApplicationProvider.getApplicationContext<Context>().deleteDatabase(name)
+    }
+
+    /** 分页查询回归：pageByConversation 与 latest 语义正确 */
+    @Test
+    fun messagePaging_pageAndLatest() = runBlocking {
+        val conv = ConversationEntity(
+            id = "paging1", userId = "u1", title = "分页", surface = ConversationSurface.CHAT,
+            createdAt = 1L, updatedAt = 1L,
+        )
+        db.conversationDao().insert(conv)
+        repeat(5) { i ->
+            db.messageDao().insert(
+                MessageEntity(
+                    id = "pm$i", conversationId = "paging1", sequence = i + 1,
+                    role = "user", content = "m$i", kind = MediaKind.TEXT, createdAt = i.toLong(),
+                )
+            )
+        }
+        val page0 = db.messageDao().pageByConversation("paging1", 2, 0)
+        val page1 = db.messageDao().pageByConversation("paging1", 2, 2)
+        assertEquals(listOf("m0", "m1"), page0.map { it.content })
+        assertEquals(listOf("m2", "m3"), page1.map { it.content })
+        assertEquals("m4", db.messageDao().latestByConversation("paging1", 1)[0].content)
+        // 卡片分页：插入 3 张卡，页大小 2 → 2 + 1
+        repeat(3) { i ->
+            db.cardDao().insert(
+                CardEntity(
+                    id = "pc$i", runId = "r1", conversationId = "paging1", sequence = i + 1,
+                    kind = MediaKind.IMAGE, title = "c$i", status = RunStatus.COMPLETED,
+                )
+            )
+        }
+        assertEquals(2, db.cardDao().pageByConversation("paging1", 2, 0).size)
+        assertEquals(1, db.cardDao().pageByConversation("paging1", 2, 2).size)
+    }
 }

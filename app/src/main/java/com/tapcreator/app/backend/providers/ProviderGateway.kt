@@ -975,39 +975,18 @@ class ProviderGateway @Inject constructor(
     }
 
     /**
-     * 网络请求执行 + 自动重试：上传瞬时抖动时重试 1 次（共 2 次尝试），
-     * 最终 IOException 统一映射为可读提示，避免裸抛 "software caused connection abort" 之类底层消息。
-     * body 为内存中的 RequestBody（可重复写），重试安全。
+     * 网络请求执行 + 自动重试：委托 [NetworkRetry]（指数退避 1s→2s，共 3 次），
+     * 避免 God File 膨胀。body 为内存 RequestBody，重试安全。
      */
-    private fun callWithRetry(builder: Request.Builder): Response {
-        var last: IOException? = null
-        repeat(2) { i ->
-            try {
-                return client.newCall(builder.build()).execute()
-            } catch (e: IOException) {
-                last = e
-                if (i == 0) Thread.sleep(1_000L)
-            }
-        }
-        throw friendlyNetworkError(checkNotNull(last))
-    }
+    private suspend fun callWithRetry(builder: Request.Builder): Response =
+        NetworkRetry.callWithRetry(client, builder)
 
-    /** 把底层网络异常映射为可读的 TapcreatorException（区分超时 / 断连 / 无法连接） */
-    private fun friendlyNetworkError(e: IOException): TapcreatorException {
-        val msg = e.message.orEmpty().lowercase()
-        val friendly = when {
-            e is java.net.SocketTimeoutException -> "网络超时：${e.message ?: "请求超时"}"
-            e is java.net.ConnectException -> "无法连接服务器，请检查网络与接口地址"
-            msg.contains("abort") || msg.contains("reset") || msg.contains("broken pipe") ||
-                msg.contains("connection") -> "网络连接被中断，请检查网络后重试"
-            msg.contains("timeout") -> "网络请求超时，请稍后重试"
-            else -> "网络请求失败：${e.message}"
-        }
-        return TapcreatorException(friendly, "NETWORK")
-    }
+    /** 底层网络异常映射：委托 [NetworkRetry] */
+    private fun friendlyNetworkError(e: IOException): TapcreatorException =
+        NetworkRetry.friendlyNetworkError(e)
 
     /** multipart POST（/images/edits 图生图）：与 execute 同构，仅 body 为 MultipartBody */
-    private fun executeMultipart(channel: Channel, secrets: ChannelSecrets, endpoint: String, body: okhttp3.MultipartBody): kotlinx.serialization.json.JsonObject {
+    private suspend fun executeMultipart(channel: Channel, secrets: ChannelSecrets, endpoint: String, body: okhttp3.MultipartBody): kotlinx.serialization.json.JsonObject {
         val base = normalizeBase(channel.baseUrl)
         var lastHttp: Pair<Int, String>? = null
         for (url in endpointUrls(base, endpoint)) {
@@ -1035,7 +1014,7 @@ class ProviderGateway @Inject constructor(
         throw TapcreatorException(upstreamUrlError(code, text), "UPSTREAM_HTTP")
     }
 
-    private fun execute(channel: Channel, secrets: ChannelSecrets, endpoint: String, body: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject {
+    private suspend fun execute(channel: Channel, secrets: ChannelSecrets, endpoint: String, body: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject {
         val base = normalizeBase(channel.baseUrl)
         val payload = json.encodeToJsonElement(body).toString().toRequestBody("application/json".toMediaType())
         var lastHttp: Pair<Int, String>? = null
@@ -1065,7 +1044,7 @@ class ProviderGateway @Inject constructor(
     }
 
     /** GET 查询（MiniMax H3 轮询任务状态） */
-    private fun executeGet(channel: Channel, secrets: ChannelSecrets, endpoint: String): kotlinx.serialization.json.JsonObject {
+    private suspend fun executeGet(channel: Channel, secrets: ChannelSecrets, endpoint: String): kotlinx.serialization.json.JsonObject {
         val base = normalizeBase(channel.baseUrl)
         val builder = Request.Builder().url(base + endpoint).get()
         if (secrets.apiKey.isNotBlank()) builder.header("Authorization", "Bearer ${secrets.apiKey}")
@@ -1082,7 +1061,7 @@ class ProviderGateway @Inject constructor(
     }
 
     /** POST 二进制端点（TTS /audio/speech 等返回原始媒体字节而非 JSON） */
-    private fun executeBytes(channel: Channel, secrets: ChannelSecrets, endpoint: String, body: kotlinx.serialization.json.JsonObject): ByteArray {
+    private suspend fun executeBytes(channel: Channel, secrets: ChannelSecrets, endpoint: String, body: kotlinx.serialization.json.JsonObject): ByteArray {
         val base = normalizeBase(channel.baseUrl)
         val payload = json.encodeToJsonElement(body).toString().toRequestBody("application/json".toMediaType())
         var lastHttp: Pair<Int, String>? = null

@@ -113,9 +113,10 @@ fun CanvasWorkspace(
     var scale by remember { mutableStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
     // 拖动中的实时偏移（画布坐标 dp）：card.x + drags[id].x
-    var drags by remember { mutableStateOf<Map<String, Offset>>(emptyMap()) }
+    // 用 SnapshotStateMap 细粒度更新：拖拽单卡只重组该卡，而非 copy 整个 Map 重组全画布
+    val drags = remember { androidx.compose.runtime.mutableStateMapOf<String, Offset>() }
     // 节点实测布局尺寸（px）
-    var nodeSizes by remember { mutableStateOf<Map<String, IntSize>>(emptyMap()) }
+    val nodeSizes = remember { androidx.compose.runtime.mutableStateMapOf<String, IntSize>() }
     // 多选删除状态：长按任意结果卡进入，进入后点其它卡追加/取消多选，点「删除」统一删除
     var multiSelect by remember { mutableStateOf(false) }
 
@@ -206,7 +207,7 @@ fun CanvasWorkspace(
                 basePx = basePos(card) + drag * density.density,
                 scale = scale,
                 pan = pan,
-                onSize = { s -> nodeSizes = nodeSizes + (card.id to s) },
+                onSize = { s -> nodeSizes[card.id] = s },
                 onClick = {
                     if (isDraft) {
                         // 点空白卡=打开提交面板；从此进入单卡编辑，退出多选
@@ -243,14 +244,14 @@ fun CanvasWorkspace(
                         onToggleNode(card.id, false)
                     }
                 },
-                onMoveStart = { drags = drags + (card.id to Offset.Zero) },
+                onMoveStart = { drags[card.id] = Offset.Zero },
                 onMove = { deltaPx ->
                     val deltaDp = Offset(
                         deltaPx.x / (scale * density.density),
                         deltaPx.y / (scale * density.density),
                     )
                     val grp = if (selected) selectedIds else setOf(card.id)
-                    drags = drags + grp.map { it to (drags[it] ?: Offset.Zero) + deltaDp }
+                    grp.forEach { id -> drags[id] = (drags[id] ?: Offset.Zero) + deltaDp }
                 },
                 onMoveEnd = {
                     val grp = if (selected) selectedIds else setOf(card.id)
@@ -260,7 +261,7 @@ fun CanvasWorkspace(
                         id to (c.x + d.x to c.y + d.y)
                     }
                     onCommitPositions(updates)
-                    drags = drags - grp
+                    grp.forEach { drags.remove(it) }
                 },
             )
         }

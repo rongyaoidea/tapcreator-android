@@ -52,6 +52,8 @@ class PRootSandbox @Inject constructor(
         private const val MAX_OUTPUT_BYTES = 1_048_576 // 1MB
         /** 等待沙箱 shell 就绪标记的最长时间（仅等 shell 启动，不等 apk 安装） */
         private const val READY_TIMEOUT_MS = 10_000L
+        /** exec 排队等待上限：单交互 shell 必须串行，排队超出此时间直接失败，避免 Agent Loop 被无限阻塞 */
+        private const val QUEUE_WAIT_MS = 60_000L
         /** 命令白名单：首命令必须在此列表内；破坏性操作由 BANNED_COMMAND_PATTERNS 二次拦截 */
         private val ALLOWED_COMMAND_PREFIXES = listOf(
             "ffmpeg", "curl", "wget", "python3", "python", "pip", "pip3", "apk",
@@ -372,7 +374,7 @@ class PRootSandbox @Inject constructor(
      *  - PROOT_TMP_DIR 指向可写目录
      * 用 sh -i 保持交互模式，通过 stdin/stdout 发送命令、读取输出。
      */
-    private fun startPRoot() {
+    private suspend fun startPRoot() {
         val workDir = File(context.filesDir, "media").apply { mkdirs() }
         // 诊断自检：先直跑 proot --version（不依赖 loader/rootfs/绑定），
         // 区分「二进制 exec / 动态库加载问题」（无输出或 CANNOT LINK）与「沙箱内部问题」。
@@ -468,7 +470,7 @@ class PRootSandbox @Inject constructor(
                 return
             }
             if (process?.isAlive != true) break
-            Thread.sleep(50)
+            delay(50)
         }
         // 失败路径：清理残留进程（避免重试时双 proot 争用 rootfs）+ 抛出带诊断的错误
         process?.let { runCatching { it.destroyForcibly() } }
@@ -492,8 +494,11 @@ class PRootSandbox @Inject constructor(
     /**
      * 在沙箱里执行命令，返回 stdout+stderr 合并输出与退出码。
      * 通过唯一标记分隔每次命令的输出，避免上一次命令残留。
+     * 单交互 shell 串行执行：排队等待计入总超时（timeoutMs + QUEUE_WAIT_MS），超时直接失败不无限等待。
      */
-    suspend fun exec(command: String, timeoutMs: Long = 30_000L): ShellResult = mutex.withLock {
+    suspend fun exec(command: String, timeoutMs: Long = 30_000L): ShellResult {
+        val result = kotlinx.coroutines.withTimeoutOrNull(timeoutMs + QUEUE_WAIT_MS) {
+            mutex.withLock {
         if (!ready.get() || process?.isAlive != true) {
             throw TapcreatorException("沙箱未就绪，请先调用 ensureReady()", "SANDBOX_NOT_READY")
         }
@@ -571,20 +576,24 @@ class PRootSandbox @Inject constructor(
                 runCatching { restartShellBlocking() }
                 ShellResult("沙箱执行异常：${e.message}", -1)
             }
+            }
         }
+        }
+        return result ?: ShellResult("沙箱忙：排队等待超时，请稍后重试", -1)
     }
 
     /**
      * 重置常驻 shell（保留 rootfs，快速）：杀掉可能仍挂在 shell 上的在途命令，再重新拉起交互 shell。
      * 供 [exec] 超时/超限/异常后恢复干净的命令流——否则残余输出会污染下一条命令的 marker 切分。
      * 调用方必须已持有 mutex（本方法不自行加锁，避免与 exec 的 mutex 重入死锁）。
+     * 挂起函数：等待进程退出时用 delay。
      */
-    private fun restartShellBlocking() {
+    private suspend fun restartShellBlocking() {
         process?.let { proc ->
             runCatching { proc.destroy() }
             val deadline = System.currentTimeMillis() + 2000L
             while (System.currentTimeMillis() < deadline && proc.isAlive) {
-                Thread.sleep(50L)
+                delay(50L)
             }
             if (proc.isAlive) runCatching { proc.destroyForcibly() }
         }

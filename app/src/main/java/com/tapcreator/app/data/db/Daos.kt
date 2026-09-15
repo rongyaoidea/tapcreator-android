@@ -46,6 +46,10 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations ORDER BY updatedAt DESC")
     fun observeAll(): Flow<List<ConversationEntity>>
 
+    /** 分页：会话列表按更新时间倒序，避免全量加载 */
+    @Query("SELECT * FROM conversations ORDER BY updatedAt DESC LIMIT :limit OFFSET :offset")
+    suspend fun pageAll(limit: Int, offset: Int): List<ConversationEntity>
+
     @Query("SELECT * FROM conversations WHERE userId = :userId ORDER BY updatedAt DESC")
     fun observeByUser(userId: String): Flow<List<ConversationEntity>>
 
@@ -66,6 +70,13 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY sequence ASC")
     fun observeByConversation(conversationId: String): Flow<List<MessageEntity>>
+
+    /** 分页：大会话按 sequence 正序翻页，首屏只取最近 N 条 */
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY sequence ASC LIMIT :limit OFFSET :offset")
+    suspend fun pageByConversation(conversationId: String, limit: Int, offset: Int): List<MessageEntity>
+
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY sequence DESC LIMIT :limit")
+    suspend fun latestByConversation(conversationId: String, limit: Int): List<MessageEntity>
 
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY sequence ASC")
     suspend fun listByConversation(conversationId: String): List<MessageEntity>
@@ -106,6 +117,10 @@ interface AgentRunDao {
     @Query("SELECT * FROM agent_runs WHERE conversationId = :conversationId ORDER BY createdAt DESC LIMIT :limit")
     suspend fun listByConversation(conversationId: String, limit: Int = 50): List<AgentRunEntity>
 
+    /** 分页：run 历史按时间倒序翻页 */
+    @Query("SELECT * FROM agent_runs WHERE conversationId = :conversationId ORDER BY createdAt DESC LIMIT :limit OFFSET :offset")
+    suspend fun pageByConversation(conversationId: String, limit: Int, offset: Int): List<AgentRunEntity>
+
     @Query("SELECT * FROM agent_runs WHERE conversationId = :conversationId ORDER BY createdAt ASC")
     fun observeByConversation(conversationId: String): Flow<List<AgentRunEntity>>
 }
@@ -145,6 +160,10 @@ interface AssetDao {
 
     @Query("SELECT * FROM assets WHERE conversationId = :conversationId ORDER BY createdAt DESC")
     fun observeByConversation(conversationId: String): Flow<List<AssetEntity>>
+
+    /** 分页：素材库按时间倒序翻页 */
+    @Query("SELECT * FROM assets WHERE conversationId = :conversationId ORDER BY createdAt DESC LIMIT :limit OFFSET :offset")
+    suspend fun pageByConversation(conversationId: String, limit: Int, offset: Int): List<AssetEntity>
 
     @Query("SELECT * FROM assets ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<AssetEntity>>
@@ -274,6 +293,10 @@ interface CardDao {
 
     @Query("SELECT * FROM cards WHERE conversationId = :conversationId AND deleted = 0 ORDER BY sequence ASC")
     suspend fun listByConversation(conversationId: String): List<CardEntity>
+
+    /** 分页：画布卡片按 sequence 翻页，大画布避免一次加载上千卡 */
+    @Query("SELECT * FROM cards WHERE conversationId = :conversationId AND deleted = 0 ORDER BY sequence ASC LIMIT :limit OFFSET :offset")
+    suspend fun pageByConversation(conversationId: String, limit: Int, offset: Int): List<CardEntity>
 
     @Query("SELECT * FROM cards WHERE runId = :runId ORDER BY sequence ASC")
     suspend fun byRun(runId: String): List<CardEntity>

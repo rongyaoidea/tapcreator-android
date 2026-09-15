@@ -1,6 +1,7 @@
 package com.tapcreator.app.data.db
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -26,7 +27,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TraceEntity::class,
         ConversationStateEntity::class,
     ],
-    version = 15,
+    version = 16,
+    autoMigrations = [AutoMigration(from = 15, to = 16)],
     // 导出 schema 快照：迁移出错时可 diff 出字段差异。schema 文件由 KSP 写入
     // app/schemas/（见 app/build.gradle.kts 的 ksp arg room.schemaLocation），入 git 留档。
     exportSchema = true,

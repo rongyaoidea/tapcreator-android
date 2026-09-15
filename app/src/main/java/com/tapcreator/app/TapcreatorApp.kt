@@ -4,16 +4,29 @@ import android.app.Application
 import android.content.ContentValues
 import android.os.Build
 import android.os.Environment
-import android.os.Handler
-import android.os.Looper
 import android.provider.MediaStore
 import com.tapcreator.app.backend.service.ChannelRepository
 import com.tapcreator.app.backend.service.RunService
 import dagger.hilt.android.HiltAndroidApp
 import java.io.File
 import java.io.PrintWriter
+import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+/** 应用启动阶段（供 Splash/设置页观察沙箱预热进度） */
+enum class AppInitStage { IDLE, SEEDING, RECONCILING, PLUGINS, SANDBOX_WARMING, READY, FAILED }
 
 @HiltAndroidApp
 class TapcreatorApp : Application() {
@@ -36,29 +49,48 @@ class TapcreatorApp : Application() {
     @Inject
     lateinit var settings: com.tapcreator.app.data.prefs.SettingsStore
 
+    /** 应用级结构化并发域：失败隔离，进程结束时取消 */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val _initStage = MutableStateFlow(AppInitStage.IDLE)
+    val initStage: StateFlow<AppInitStage> = _initStage.asStateFlow()
+
     override fun onCreate() {
         super.onCreate()
         installCrashLogger()
-        // 后台线程种子化默认渠道/模型 + 回收上次进程遗留的在途 run，不阻塞首帧
-        Thread {
+        // 结构化并发启动：种子数据与插件并行，沙箱延迟预热，全程不阻塞首帧
+        _initStage.value = AppInitStage.SEEDING
+        appScope.launch {
             runCatching {
-                kotlinx.coroutines.runBlocking {
-                    channels.seedDefaults()
-                    channels.autoFillAllResolutions()
-                    runService.reconcileStaleRuns()
-                    // 加载已安装的第三方设计 Skill
-                    skillRegistry.init()
-                    // 加载已注册的 MCP 服务器
-                    mcpManager.init()
-                    // 加载 per-model 的图生图参考形态覆盖（用户/Agent 设置的档案纠正）
-                    loadModelProfileOverrides()
-                    // 后台预热沙箱：解压 rootfs + 启动 PRoot + 安装 ffmpeg/curl/python3
-                    // 首次约 30-60 秒，不阻塞首帧；沙箱就绪后 Agent 的搜索/拼接工具可用
-                    sandbox.ensureReady()
+                // 渠道种子是关键路径：失败则整体 FAILED；插件/覆盖项失败隔离，并行加载
+                channels.seedDefaults()
+                awaitAll(
+                    async { runCatching { skillRegistry.init() } },
+                    async { runCatching { mcpManager.init() } },
+                    async { runCatching { loadModelProfileOverrides() } },
+                )
+                _initStage.value = AppInitStage.RECONCILING
+                runCatching { runService.reconcileStaleRuns() }
+                    .onFailure { android.util.Log.w("TapcreatorApp", "reconcileStaleRuns 失败", it) }
+                runCatching { channels.autoFillAllResolutions() }
+                    .onFailure { android.util.Log.w("TapcreatorApp", "autoFillAllResolutions 失败", it) }
+                _initStage.value = AppInitStage.SANDBOX_WARMING
+                // 沙箱预热最慢且非首屏必需：独立子协程，失败只打日志不影响 READY
+                launch {
+                    runCatching { sandbox.ensureReady() }
+                        .onFailure { android.util.Log.w("TapcreatorApp", "沙箱预热失败，Agent 搜索/拼接工具暂不可用", it) }
                 }
+                _initStage.value = AppInitStage.READY
+            }.onFailure {
+                android.util.Log.e("TapcreatorApp", "应用初始化失败", it)
+                _initStage.value = AppInitStage.FAILED
             }
-            Handler(Looper.getMainLooper()).post {}
-        }.start()
+        }
+    }
+
+    override fun onTerminate() {
+        super.onTerminate()
+        appScope.cancel()
     }
 
     /** 把 DataStore 里的「图生图参考形态覆盖」灌进进程内的 ModelProfileCatalog（须在生成前完成）。 */
@@ -92,10 +124,12 @@ class TapcreatorApp : Application() {
             // 同时上报 Crashlytics（若已配置 Firebase）
             crashlytics?.recordException(throwable)
             crashlytics?.setCustomKey("thread", thread.name)
-            val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())
+            // SimpleDateFormat 非线程安全：崩溃线程每次新建实例，避免静态复用竞态
+            val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
             val sw = java.io.StringWriter()
             throwable.printStackTrace(PrintWriter(sw))
             val body = "==== $stamp | thread=${thread.name} ====\n${sw}\n"
+            // 崩溃线程做 IO 必须加保护：查询/写入失败不得掩盖原始崩溃
             runCatching { writeCrashLog(body) }
             prev?.uncaughtException(thread, throwable)
         }

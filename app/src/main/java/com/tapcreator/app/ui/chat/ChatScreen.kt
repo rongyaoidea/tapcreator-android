@@ -73,13 +73,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -105,6 +107,8 @@ import com.tapcreator.app.ui.theme.Dimens
 import com.tapcreator.app.ui.theme.CardButton
 import com.tapcreator.app.ui.theme.pressSpring
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -117,10 +121,10 @@ fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
     onOpenTasks: (String) -> Unit = {},
 ) {
-    val messages by viewModel.messages.collectAsState()
-    val cards by viewModel.cards.collectAsState()
-    val runs by viewModel.runs.collectAsState()
-    val activeRun by viewModel.activeRun.collectAsState()
+    val messages by viewModel.messages.collectAsStateWithLifecycle()
+    val cards by viewModel.cards.collectAsStateWithLifecycle()
+    val runs by viewModel.runs.collectAsStateWithLifecycle()
+    val activeRun by viewModel.activeRun.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     // 长按删除确认：持有待执行删除动作
@@ -170,7 +174,7 @@ fun ChatScreen(
                 .imePadding(),
         ) {
             // 画布式工作空间：可平移/缩放、双击新建/聚焦、拖线连引用、按类型过滤、框选批量管理
-            val cardLinks by viewModel.cardLinks.collectAsState()
+            val cardLinks by viewModel.cardLinks.collectAsStateWithLifecycle()
             Box(modifier = Modifier.weight(1f)) {
                 CanvasWorkspace(
                     cards = cards,
@@ -521,8 +525,8 @@ private fun RenameDialog(title: String, onConfirm: (String) -> Unit, onDismiss: 
 @Composable
 private fun LinkSheet(vm: ChatViewModel, targetId: String, onDismiss: () -> Unit) {
     // 在工作界面直接设置卡片间参考关系（role=reference），无需切到关系图
-    val cards by vm.cards.collectAsState()
-    val links by vm.cardLinks.collectAsState()
+    val cards by vm.cards.collectAsStateWithLifecycle()
+    val links by vm.cardLinks.collectAsStateWithLifecycle()
     val target = cards.firstOrNull { it.id == targetId }
     if (target == null) { onDismiss(); return }
     // 按类型矩阵筛选可连候选：
@@ -1445,11 +1449,12 @@ private fun UploadButton(vm: ChatViewModel, kind: MediaKind = vm.selectedKind) {
     }
 }
 /**
- * 成品卡全屏预览：图片放大查看 / 视频播放，并提供下载到相册。
- * 图片用 AsyncImage 全屏铺满；视频用自建 SurfaceView+ExoPlayer 播放（带音）。
+ * LEGACY 残留：成品卡全屏预览旧实现，已被 ChatMediaPreview.kt 的 MediaPreview 取代。
+ * 保留仅作回归对照，验证通过后整体删除（含本函数体）。
  */
 @Composable
-private fun MediaPreview(
+@Deprecated("已抽到 ChatMediaPreview.kt 的 MediaPreview，保留仅防回归，完成验证后删除")
+private fun MediaPreviewLegacy(
     card: CardEntity,
     onDismiss: () -> Unit,
     onDownload: () -> Unit,
@@ -1503,11 +1508,13 @@ private fun MediaPreview(
                     when {
                         file != null && card.kind == MediaKind.VIDEO -> VideoPlayer(file = file)
                         file != null && card.kind == MediaKind.IMAGE -> {
-                            // 只解码图片边界拿宽高（不加载整图），用于按图片比例缩放预览框
-                            val bounds = remember(file) {
-                                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                runCatching { BitmapFactory.decodeFile(file.absolutePath, opts) }
-                                if (opts.outWidth > 0 && opts.outHeight > 0) opts.outWidth to opts.outHeight else null
+                            // 只解码图片边界拿宽高（不加载整图），IO 下沉到后台线程避免阻塞主线程
+                            val bounds by produceState<Pair<Int, Int>?>(initialValue = null, file) {
+                                value = withContext(Dispatchers.IO) {
+                                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                    runCatching { BitmapFactory.decodeFile(file.absolutePath, opts) }
+                                    if (opts.outWidth > 0 && opts.outHeight > 0) opts.outWidth to opts.outHeight else null
+                                }
                             }
                             val ratio = bounds?.let { it.first.toFloat() / it.second.toFloat() } ?: 1f
                             // 宽度不超过可用宽、高度不超过 480dp，同时保持图片宽高比，让框刚好贴合图片
@@ -1599,29 +1606,4 @@ private fun MediaPreview(
     }
 }
 
-/**
- * 全屏视频播放（带音）。自建 SurfaceView 绑定 ExoPlayer，避免引入 exoplayer-ui。
- * 退出时释放 player，避免后台持有解码器资源。
- */
-@Composable
-private fun VideoPlayer(file: File) {
-    val context = LocalContext.current
-    val player = remember(file.absolutePath) {
-        com.google.android.exoplayer2.ExoPlayer.Builder(context).build().apply {
-            setMediaItem(com.google.android.exoplayer2.MediaItem.fromUri(android.net.Uri.fromFile(file)))
-            playWhenReady = true
-            prepare()
-        }
-    }
-    DisposableEffect(player) {
-        onDispose { player.release() }
-    }
-    AndroidView(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(16f / 9f),
-        factory = { ctx ->
-            android.view.SurfaceView(ctx).apply { player.setVideoSurfaceView(this) }
-        },
-    )
-}
+// VideoPlayer/MediaPreview 已抽到 ChatMediaPreview.kt，避免 ChatScreen 成为 God File。

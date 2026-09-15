@@ -81,10 +81,13 @@ class RateLimiter @Inject constructor() {
     }
 
     /** 重置限制器（清空历史，用于测试/切换模型） */
-    fun reset() {
-        kotlinx.coroutines.runBlocking {
-            mutex.withLock { timestamps.clear() }
-        }
+    suspend fun reset() {
+        mutex.withLock { timestamps.clear() }
+    }
+
+    /** 同步兼容入口：仅供非协程上下文（如 Application 初始化）调用，协程内请用 suspend reset() */
+    fun resetBlocking() {
+        kotlinx.coroutines.runBlocking { reset() }
     }
 
     /** 当前窗口内已用请求数 */

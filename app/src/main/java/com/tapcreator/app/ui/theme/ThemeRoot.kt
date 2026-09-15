@@ -1,7 +1,7 @@
 package com.tapcreator.app.ui.theme
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import com.tapcreator.app.data.prefs.SettingsStore
@@ -13,6 +13,6 @@ fun TapcreatorRootTheme(
     content: @Composable () -> Unit,
 ) {
     val dark by remember(settings) { settings.darkTheme }
-        .collectAsState(initial = false)
+        .collectAsStateWithLifecycle(initialValue = false)
     TapcreatorTheme(darkTheme = dark, content = content)
 }

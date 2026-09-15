@@ -236,8 +236,9 @@ class MCPManager @Inject constructor(
     /**
      * 读取 newline-delimited JSON-RPC 响应，**按 request id 匹配**（进程复用、且一次超时可能留下迟到响应，
      * 若只看"第一条 result/error"会把上一条的迟到响应误挂到本次调用）。支持单行与跨行 JSON。
+     * 挂起函数：等待时用 delay 让出 IO 线程。
      */
-    private fun readResponseLine(serverName: String, wantId: Int, timeoutMs: Long = 30_000L): JsonObject? {
+    private suspend fun readResponseLine(serverName: String, wantId: Int, timeoutMs: Long = 30_000L): JsonObject? {
         val reader = stdioReaders[serverName] ?: return null
         val deadline = System.currentTimeMillis() + timeoutMs
         val sb = StringBuilder()
@@ -263,14 +264,14 @@ class MCPManager @Inject constructor(
                     ) return acc
                 }
             } else {
-                Thread.sleep(25)
+                kotlinx.coroutines.delay(25)
             }
         }
         return null // 超时
     }
 
     /** MCP 官方握手：initialize（阻塞取回 result）→ notifications/initialized（通知）。每个进程只做一次。 */
-    private fun ensureInitializedStdio(serverName: String, proc: Process) {
+    private suspend fun ensureInitializedStdio(serverName: String, proc: Process) {
         if (initialized[serverName] == true) return
         val initId = requestId.incrementAndGet()
         val initReq = buildJsonObject {

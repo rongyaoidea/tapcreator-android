@@ -16,7 +16,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -32,7 +32,7 @@ fun ProfileScreen(
     onLoggedOut: () -> Unit,
     vm: ProfileViewModel = hiltViewModel(),
 ) {
-    val user by vm.user.collectAsState()
+    val user by vm.user.collectAsStateWithLifecycle()
 
     if (vm.loggedOut) {
         androidx.compose.runtime.LaunchedEffect(Unit) { onLoggedOut() }

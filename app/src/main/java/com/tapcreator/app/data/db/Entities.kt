@@ -51,7 +51,10 @@ data class MessageEntity(
 )
 
 /** Agent Run（一次生成任务的编排载体） */
-@Entity(tableName = "agent_runs", indices = [Index(value = ["conversationId"])])
+@Entity(
+    tableName = "agent_runs",
+    indices = [Index(value = ["conversationId"]), Index(value = ["status"]), Index(value = ["conversationId", "status", "createdAt"])]
+)
 data class AgentRunEntity(
     @PrimaryKey val id: String,
     val conversationId: String,
@@ -87,7 +90,10 @@ data class TaskEntity(
 )
 
 /** 素材（媒体登记） */
-@Entity(tableName = "assets", indices = [Index(value = ["conversationId"]), Index(value = ["folderId"])])
+@Entity(
+    tableName = "assets",
+    indices = [Index(value = ["conversationId"]), Index(value = ["folderId"]), Index(value = ["conversationId", "createdAt"])]
+)
 data class AssetEntity(
     @PrimaryKey val id: String,
     val conversationId: String,
@@ -140,7 +146,10 @@ data class ModelOptionEntity(
 )
 
 /** 结果卡片——关系图的节点 */
-@Entity(tableName = "cards")
+@Entity(
+    tableName = "cards",
+    indices = [Index(value = ["conversationId"]), Index(value = ["runId"]), Index(value = ["conversationId", "sequence"])]
+)
 data class CardEntity(
     @PrimaryKey val id: String,
     val runId: String,
@@ -161,7 +170,10 @@ data class CardEntity(
 )
 
 /** 卡片自由连接——关系图的边 */
-@Entity(tableName = "card_links", indices = [Index(value = ["fromCardId"])])
+@Entity(
+    tableName = "card_links",
+    indices = [Index(value = ["fromCardId"]), Index(value = ["toCardId"])]
+)
 data class CardLinkEntity(
     @PrimaryKey val id: String,
     val fromCardId: String,
@@ -179,7 +191,10 @@ data class MemoryEntity(
 )
 
 /** Agent run 可观测轨迹：记录每轮思考/动作/观察，runId 区分同会话多次执行，便于排查与复盘 */
-@Entity(tableName = "agent_trace", indices = [Index(value = ["conversationId"]), Index(value = ["runId"])])
+@Entity(
+    tableName = "agent_trace",
+    indices = [Index(value = ["conversationId"]), Index(value = ["runId"]), Index(value = ["conversationId", "runId", "turn"])]
+)
 data class TraceEntity(
     @PrimaryKey val id: String,
     val conversationId: String,

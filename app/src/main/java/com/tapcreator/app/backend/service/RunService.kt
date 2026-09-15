@@ -63,6 +63,7 @@ class RunService @Inject constructor(
     private val gateway: ProviderGateway,
     private val media: MediaStore,
     private val http: okhttp3.OkHttpClient,
+    @javax.inject.Named("download") private val downloadClient: okhttp3.OkHttpClient,
     private val ffmpegConcatenator: FfmpegConcatenator,
     @ApplicationContext private val appContext: Context,
 ) {
@@ -70,12 +71,6 @@ class RunService @Inject constructor(
     private val cancelFlags = ConcurrentHashMap<String, AtomicBoolean>()
     /** 记录每个 run 正在执行的生成协程，供 cancel() 及时中断挂起中的上游轮询 */
     private val runningJobs = ConcurrentHashMap<String, Job>()
-
-    /** 视频段下载专用 client：长时大体积下载覆盖超时；常驻复用避免每段 newBuilder 泄漏线程池/连接池 */
-    private val downloadClient: okhttp3.OkHttpClient = http.newBuilder()
-        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
-        .build()
 
     /** 视频单段续生成的上限（秒）——按常见视频模型的单段窗口设定，超长时自动分段 */
     private val SEGMENT_SECONDS = 8
@@ -447,14 +442,14 @@ class RunService @Inject constructor(
     private fun newFinalFile(): File =
         File(media.mediaRoot(), "video-${System.currentTimeMillis()}-${UUID.randomUUID().toString().substring(0, 8)}.mp4")
 
-    private fun File.writeUntil(result: UpstreamResult) {
+    private suspend fun File.writeUntil(result: UpstreamResult) {
         if (result.mediaBytes != null) {
             writeBytes(result.mediaBytes)
         } else if (result.mediaUrl != null) {
             // 复用常驻下载 client（连接池/通用配置），仅对长时大体积下载覆盖超时
             val client = downloadClient
-            // 下载瞬时断连重试 1 次，最终映射为可读提示
-            repeat(2) { i ->
+            // 下载瞬时断连指数退避重试 2 次，最终映射为可读提示；delay 不阻塞 IO 线程
+            repeat(3) { i ->
                 try {
                     client.newCall(okhttp3.Request.Builder().url(result.mediaUrl).build()).execute().use { resp ->
                         if (!resp.isSuccessful) throw TapcreatorException("视频段下载失败 HTTP ${resp.code}", "UPSTREAM_HTTP")
@@ -462,7 +457,7 @@ class RunService @Inject constructor(
                     }
                     return
                 } catch (e: java.io.IOException) {
-                    if (i == 0) Thread.sleep(1_000L)
+                    if (i < 2) kotlinx.coroutines.delay(1_000L shl i)
                 }
             }
             delete() // 清理可能已部分写入的文件，避免临时文件泄漏

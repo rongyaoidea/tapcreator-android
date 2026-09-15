@@ -1,6 +1,5 @@
 package com.tapcreator.app.ui.components
 
-import android.net.Uri
 import android.view.SurfaceView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -8,14 +7,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
-import com.google.android.exoplayer2.ExoPlayer
-import com.google.android.exoplayer2.MediaItem
-import com.google.android.exoplayer2.Player
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import java.io.File
 
 /**
  * 本地视频缩略播放（无音频系），用于聊天卡片 / 素材库网格的视频预览。
- * 自绘 SurfaceView 绑定 ExoPlayer，避免引入 exoplayer-ui。
+ * 自绘 SurfaceView 绑定 ExoPlayer，避免引入 media3-ui。
  */
 @Composable
 fun VideoThumb(
@@ -25,17 +27,29 @@ fun VideoThumb(
     loop: Boolean = true,
 ) {
     val context = LocalContext.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val player = remember(file.absolutePath) {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+            setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file)))
             repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             volume = 0f
             playWhenReady = autoPlay
             prepare()
         }
     }
-    DisposableEffect(player) {
-        onDispose { player.release() }
+    DisposableEffect(player, lifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> player.pause()
+                Lifecycle.Event.ON_RESUME -> if (autoPlay) player.play()
+                else -> Unit
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose {
+            lifecycle.removeObserver(observer)
+            player.release()
+        }
     }
     AndroidView(
         modifier = modifier,

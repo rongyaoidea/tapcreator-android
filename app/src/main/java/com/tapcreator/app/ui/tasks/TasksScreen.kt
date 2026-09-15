@@ -20,7 +20,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,7 +37,7 @@ fun TasksScreen(
     onBack: () -> Unit,
     vm: TasksViewModel = hiltViewModel(),
 ) {
-    val tasks by vm.tasks.collectAsState()
+    val tasks by vm.tasks.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -150,8 +150,8 @@ private fun statusColor(status: TaskStatus): androidx.compose.ui.graphics.Color 
     TaskStatus.READY -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
+private val tasksTimeFmt = ThreadLocal.withInitial { java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()) }
+
 private fun timeLabel(epoch: Long): String {
-    val d = java.util.Date(epoch)
-    val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
-    return fmt.format(d)
+    return tasksTimeFmt.get().format(java.util.Date(epoch))
 }

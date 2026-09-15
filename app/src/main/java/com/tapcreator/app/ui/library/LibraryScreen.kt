@@ -47,7 +47,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,8 +83,8 @@ fun LibraryScreen(
     onToggleFolderPick: ((AssetFolderEntity) -> Unit)? = null,
     isFolderPicked: ((AssetFolderEntity) -> Boolean)? = null,
 ) {
-    val assets by vm.assets.collectAsState()
-    val folders by vm.folders.collectAsState()
+    val assets by vm.assets.collectAsStateWithLifecycle()
+    val folders by vm.folders.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // 当前浏览的文件夹：null=全部, SENTINEL_UNASSIGNED=未归档, 其余=文件夹id
