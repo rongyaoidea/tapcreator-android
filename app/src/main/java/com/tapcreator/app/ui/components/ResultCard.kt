@@ -1,6 +1,7 @@
 package com.tapcreator.app.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.scaleIn
@@ -77,7 +78,7 @@ fun ResultCard(
             visible = appear,
             enter = fadeIn(tween(320)) + scaleIn(initialScale = 0.96f, animationSpec = tween(320)),
         ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth().animateContentSize()) {
             if (card.kind == MediaKind.TEXT) {
                 Column(modifier = Modifier.fillMaxWidth().padding(Dimens.Md)) {
                     Text(

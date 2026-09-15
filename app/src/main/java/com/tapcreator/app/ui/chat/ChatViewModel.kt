@@ -58,6 +58,7 @@ class ChatViewModel @Inject constructor(
     private val router: ModelRouter,
     private val runService: RunService,
     private val brain: AgentBrain,
+    private val skillRegistry: com.tapcreator.app.backend.skill.SkillRegistry,
     private val media: MediaStore,
     private val auth: AuthService,
     @ApplicationContext private val appContext: Context,
@@ -868,6 +869,84 @@ class ChatViewModel @Inject constructor(
             } else {
                 db.cardLinkDao().deleteForCard(draftId)
                 db.cardDao().hardDelete(draftId)
+            }
+        }
+    }
+
+    // ---------- 提示词撰写：在输入框处唤出 Agent 调用设计 Skill 扩写提示词 ----------
+
+    /** 可用的设计 Skill（内置预设 + 已安装），供输入框的「提示词 Skill」选择。 */
+    val promptSkills: StateFlow<List<com.tapcreator.app.data.model.DesignSkill>> =
+        skillRegistry.designSkillsFlow.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            skillRegistry.all(),
+        )
+
+    /** 提示词撰写中（按钮转圈/禁用） */
+    var promptComposeBusy by mutableStateOf(false)
+        private set
+
+    /** 正在使用的 Skill id（高亮 chip；null = 不限风格直接扩写） */
+    var promptComposeSkillId by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * 唤出 Agent（提示词撰写模式）把当前输入扩写成生成提示词：
+     * 只允许只读/风格 Skill 动作，不产卡；完成后把提示词回填输入框供用户编辑再发送。
+     * @param skillId 设计 Skill id；null = 不限风格直接扩写
+     */
+    fun composePromptWithSkill(skillId: String?) {
+        val base = input.trim()
+        if (base.isEmpty()) {
+            toast("先输入一句话创作诉求，再唤出 Agent 写提示词")
+            return
+        }
+        if (promptComposeBusy) {
+            toast("Agent 正在撰写提示词，请稍候")
+            return
+        }
+        val t = token ?: return
+        val skill = skillId?.let { skillRegistry.byId(it) }
+        promptComposeBusy = true
+        promptComposeSkillId = skill?.id
+        viewModelScope.launch {
+            var produced: String? = null
+            try {
+                val instruction = buildString {
+                    append("请把下面这句话扩写成一段可直接用于生成的提示词")
+                    if (skill != null) {
+                        append("，并先 apply_skill 应用设计 Skill「${skill.id}」（${skill.name}）的风格指导")
+                    }
+                    append("。\n用户原话：$base")
+                }
+                brain.run(
+                    token = t,
+                    conversationId = conversationId,
+                    userPrompt = instruction,
+                    modelId = selectedAgentModelId,
+                    cinematic = selectedKind == MediaKind.VIDEO, // 视频诉求按分镜结构扩写
+                    memoryEnabled = false,
+                    style = settings.agentStyleValue().trim(),
+                    maxTurns = 4,
+                    promptOnly = true,
+                    onPromptReady = { produced = it },
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                toast(e.message ?: "撰写提示词失败")
+            } finally {
+                promptComposeBusy = false
+                promptComposeSkillId = null
+            }
+            val out = produced?.trim()
+            if (out.isNullOrBlank()) {
+                toast("Agent 未产出提示词，请重试")
+            } else {
+                input = out
+                markStateChanged()
+                toast("提示词已写入输入框，可编辑后发送")
             }
         }
     }

@@ -147,6 +147,12 @@ object AgentToolRegistry {
                 Param("tool", "string", "工具名称", true),
                 Param("arguments", "string", "工具参数，JSON 格式（如 {\"key\":\"value\"}）"),
             )),
+        Tool("mcp_market", "浏览/安装内置 MCP 市场条目（均为可直接使用的 HTTP 远程服务器）。不传 install 时按关键词列出条目；传 install=条目名 即安装该条目并持久化，随后可用 mcp_list_tools/mcp_call_tool。",
+            listOf(
+                Param("query", "string", "可选：列出时按关键词过滤（名称/描述/分类）"),
+                Param("install", "string", "可选：要安装的条目名（如 deepwiki / microsoft-learn / cloudflare-docs / context7）"),
+                Param("api_key", "string", "可选：安装时的 API Key（写入该条目的鉴权请求头；部分条目匿名即可用）"),
+            )),
     )
 
     /**
@@ -158,26 +164,30 @@ object AgentToolRegistry {
         return tool.params.filter { it.required }.map { it.name }.filter { it !in providedKeys }
     }
 
-    /** 渲染为 JSON 数组形式的工具清单（合法 JSON），供 Agent 直接读取以了解可调用能力 */
-    fun toPromptTable(): String = buildString {
+    /** 渲染为 JSON 数组形式的工具清单（合法 JSON），供 Agent 直接读取以了解可调用能力。
+     *  @param allowed 非空时只渲染其中的工具（提示词撰写等受限模式用白名单裁剪）。 */
+    fun toPromptTable(allowed: Set<String>? = null): String = buildString {
+        val list = if (allowed == null) tools else tools.filter { it.name in allowed }
         appendLine("可用工具（输出对象的 action 必须取 name 之一；字段见 parameters）：")
         appendLine("[")
-        tools.forEachIndexed { i, t ->
+        list.forEachIndexed { i, t ->
             val params = t.params.joinToString(", ") { p ->
                 val req = if (p.required) " \"required\":true," else ""
                 "{\"name\":\"${esc(p.name)}\",\"type\":\"${esc(p.type)}\",$req\"desc\":\"${esc(p.desc)}\"}"
             }
             append("  {\"name\":\"${esc(t.name)}\",\"desc\":\"${esc(t.desc)}\",\"parameters\":[$params]}")
-            if (i == tools.lastIndex) appendLine() else appendLine(",")
+            if (i == list.lastIndex) appendLine() else appendLine(",")
         }
         appendLine("]")
         appendLine("generate 示例：{\"action\":\"generate\",\"tool\":\"GENERATE_VIDEO\",\"prompt\":\"...\",\"seconds\":10,\"ratio\":\"16:9\",\"reference_folder\":\"主角小薇\"}")
         append("每次只做一件事；需要的字段若拿不准，先用 read_card/list_cards/list_assets 或 web_search/fetch_url 获取后再原样填。")
     }
 
-    /** OpenAI 兼容 function-calling schema。供 ProviderGateway.agentChat 在支持的端点上走结构化工具调用；不支持时回退到 toPromptTable 的文本解析。 */
-    fun toFunctionSchemas(): JsonArray = buildJsonArray {
-        tools.forEach { t ->
+    /** OpenAI 兼容 function-calling schema。供 ProviderGateway.agentChat 在支持的端点上走结构化工具调用；不支持时回退到 toPromptTable 的文本解析。
+     *  @param allowed 非空时只导出其中的工具（受限模式白名单）。 */
+    fun toFunctionSchemas(allowed: Set<String>? = null): JsonArray = buildJsonArray {
+        val list = if (allowed == null) tools else tools.filter { it.name in allowed }
+        list.forEach { t ->
             add(
                 buildJsonObject {
                     put("type", "function")

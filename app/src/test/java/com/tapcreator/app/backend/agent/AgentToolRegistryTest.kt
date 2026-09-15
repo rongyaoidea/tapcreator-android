@@ -32,6 +32,7 @@ class AgentToolRegistryTest {
             "web_search", "fetch_url",
             "configure_resolution",
             "list_skills", "apply_skill", "skill_creator", "uninstall_skill",
+            "mcp_market",
             "link_cards", "unlink_cards", "layout_canvas", "finish",
         ).forEach {
             assertTrue("缺少工具: $it", names.contains(it))

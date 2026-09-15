@@ -30,4 +30,25 @@ class AgentPromptsTest {
         assertTrue(prompt.contains("赛博朋克"))
         assertTrue(prompt.contains("个人风格偏好"))
     }
+
+    @Test
+    fun `promptOnly prompt drops generate from tool table and keeps skill tools`() {
+        val normal = AgentPrompts.systemPrompt(cinematic = false)
+        val writer = AgentPrompts.systemPrompt(cinematic = false, promptOnly = true)
+        // 常规模式工具表含 generate；提示词撰写模式不含（白名单裁剪）
+        assertTrue(normal.contains("\"name\":\"generate\""))
+        assertTrue(!writer.contains("\"name\":\"generate\""))
+        assertTrue(writer.contains("提示词撰写"))
+        assertTrue(writer.contains("\"name\":\"apply_skill\""))
+        assertTrue(writer.contains("\"name\":\"finish\""))
+    }
+
+    @Test
+    fun `promptOnly action whitelist forbids side effects`() {
+        assertTrue(AgentPrompts.PROMPT_ONLY_ACTIONS.contains("apply_skill"))
+        assertTrue(AgentPrompts.PROMPT_ONLY_ACTIONS.contains("finish"))
+        listOf("generate", "delete_card", "shell_execute", "install_package", "mcp_add_server").forEach {
+            assertTrue("提示词模式不应允许 $it", it !in AgentPrompts.PROMPT_ONLY_ACTIONS)
+        }
+    }
 }

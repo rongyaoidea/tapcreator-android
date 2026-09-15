@@ -2,6 +2,7 @@ package com.tapcreator.app.backend.mcp
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -52,5 +53,28 @@ class McpMarketTest {
         assertTrue("按名称应能命中 deepwiki", McpMarket.search("deepwiki").any { it.name == "deepwiki" })
         assertTrue("按描述应能命中文档类", McpMarket.search("文档").isNotEmpty())
         assertTrue("未知关键词应返回空", McpMarket.search("no-such-mcp-xyz").isEmpty())
+    }
+
+    @Test
+    fun `market byName finds exact and partial matches`() {
+        assertEquals("deepwiki", McpMarket.byName("deepwiki")?.name)
+        assertEquals("deepwiki", McpMarket.byName("DeepWiki")?.name)
+        assertEquals("microsoft-learn", McpMarket.byName("learn")?.name)
+        assertNull("未知名称应返回 null", McpMarket.byName("no-such-mcp"))
+        assertNull("空名称应返回 null", McpMarket.byName("   "))
+    }
+
+    @Test
+    fun `market buildEnv only sets header when key provided`() {
+        val context7 = McpMarket.byName("context7")!!
+        assertTrue("未提供 Key 时应匿名（空 env）", McpMarket.buildEnv(context7, "").isEmpty())
+        assertTrue("仅空白 Key 时也应匿名", McpMarket.buildEnv(context7, "   ").isEmpty())
+        assertEquals(
+            mapOf("CONTEXT7_API_KEY" to "sk-abc"),
+            McpMarket.buildEnv(context7, " sk-abc "),
+        )
+        // 未声明 header 名的条目：即便传 Key 也不写入
+        val deepwiki = McpMarket.byName("deepwiki")!!
+        assertTrue(McpMarket.buildEnv(deepwiki, "sk-abc").isEmpty())
     }
 }

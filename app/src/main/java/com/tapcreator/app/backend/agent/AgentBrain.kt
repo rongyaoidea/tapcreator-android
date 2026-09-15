@@ -67,8 +67,8 @@ class AgentBrain @Inject constructor(
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    private fun systemPrompt(cinematic: Boolean, style: String = ""): String =
-        AgentPrompts.systemPrompt(cinematic, style)
+    private fun systemPrompt(cinematic: Boolean, style: String = "", promptOnly: Boolean = false): String =
+        AgentPrompts.systemPrompt(cinematic, style, promptOnly)
 
     /**
      * 运行一次 Agent Loop。
@@ -92,6 +92,10 @@ class AgentBrain @Inject constructor(
         onReasoning: (String) -> Unit = {},
         // 推理深度级别（用户面板手动选择）：透传给 gateway.agentChatStream
         thinkingLevel: ThinkingLevel = ThinkingLevel.AUTO,
+        // 提示词撰写模式：只允许只读/风格 Skill 动作，最终用 finish.summary 原样返回提示词（禁止 generate 等副作用）
+        promptOnly: Boolean = false,
+        // 提示词撰写模式下拿到最终提示词文本的回调（已清理围栏/引号），供 UI 回填输入框
+        onPromptReady: (String) -> Unit = {},
     ): List<String> {
         val modelEntity = modelId?.let { id -> router.models(MediaKind.TEXT).firstOrNull { it.id == id } }
             ?: router.defaultModel(MediaKind.TEXT)
@@ -115,7 +119,9 @@ class AgentBrain @Inject constructor(
 
         var turn = 0
         // P0：结构化工具调用 schema（供文本大脑）；上游不支持时由调用处回退纯文本
-        val toolsJson = AgentToolRegistry.toFunctionSchemas()
+        // 提示词撰写模式：按白名单裁剪工具表，从源头拿掉 generate 等副作用动作
+        val allowedActions: Set<String>? = if (promptOnly) AgentPrompts.PROMPT_ONLY_ACTIONS else null
+        val toolsJson = AgentToolRegistry.toFunctionSchemas(allowedActions)
         // 上游是否支持结构化 function calling：首次默认 true，收到 400 后标记 false 切纯文本 JSON 动作模式
         var toolsSupported = true
         // 死循环检测器：滑动窗口识别 未知工具/无进展/重复空转，分级 WARNING→CRITICAL
@@ -179,6 +185,8 @@ class AgentBrain @Inject constructor(
                 gateway = gateway,
                 channels = channels,
                 emitTrace = emitTrace,
+                promptOnly = promptOnly,
+                onPromptReady = onPromptReady,
             )
             // P2 上下文压缩：st.trace 超过阈值时压缩旧消息，保持上下文有界
             if (st.trace.size > MEMORY_WINDOW * 2) {
@@ -195,7 +203,7 @@ class AgentBrain @Inject constructor(
 
             try {
             val messages = buildList {
-                add(ChatMessage("system", systemPrompt(cinematic, style)))
+                add(ChatMessage("system", systemPrompt(cinematic, style, promptOnly)))
                 buildContext(ctx.conversationId, ctx.memoryEnabled)?.takeIf { it.isNotBlank() }?.let { add(ChatMessage("system", it)) }
                 addAll(st.trace.takeLast(MEMORY_WINDOW))
             }
@@ -406,6 +414,9 @@ class AgentBrain @Inject constructor(
         val gateway: ProviderGateway,
         val channels: ChannelRepository,
         val emitTrace: suspend () -> Unit,
+        /** 提示词撰写模式：仅允许白名单动作，finish 时把提示词回传 UI 而非写入对话 */
+        val promptOnly: Boolean = false,
+        val onPromptReady: (String) -> Unit = {},
     )
 
 
@@ -421,6 +432,11 @@ class AgentBrain @Inject constructor(
         val missing = AgentToolRegistry.missingRequired(action.action, signatureParams(action).keys)
         if (missing.isNotEmpty()) {
             st.trace += ChatMessage("user", "[预检失败] 动作「${action.action}」缺少必填参数：${missing.joinToString("、")}。请补全后重试，或改用其它动作/finish。")
+            return ActionOutcome.CONTINUE
+        }
+        // 提示词撰写模式：白名单之外的动作（尤其 generate 等副作用动作）一律拦截回灌
+        if (ctx.promptOnly && action.action !in AgentPrompts.PROMPT_ONLY_ACTIONS) {
+            st.trace += ChatMessage("user", "[提示词模式] 动作「${action.action}」在提示词撰写模式不可用。请勿生成卡片或改动数据，直接用 finish 把提示词作为 summary 返回。")
             return ActionOutcome.CONTINUE
         }
         when (action.action) {
@@ -815,7 +831,12 @@ class AgentBrain @Inject constructor(
             }
             "finish" -> {
                 st.finished = true
-                if (!st.summaryWritten) {
+                if (ctx.promptOnly) {
+                    // 提示词撰写模式：把 summary 作为提示词回传 UI，不写入会话（避免把提示词当回复刷屏）
+                    val raw = action.summary?.takeIf { it.isNotBlank() }
+                    st.summaryWritten = true
+                    if (raw != null) ctx.onPromptReady(cleanPromptText(raw))
+                } else if (!st.summaryWritten) {
                     writeAssistantSummary(ctx.conversationId, action.summary?.takeIf { it.isNotBlank() } ?: "已完成。本轮共产出 ${st.outputCards.size} 张卡片。")
                     st.summaryWritten = true
                 }
@@ -1083,6 +1104,44 @@ class AgentBrain @Inject constructor(
                 }
                 val capped = result.take(2000)
                 st.trace += ChatMessage("user", "[观察] MCP「$serverName/$toolName」返回：\n$capped${if (result.length > 2000) "\n…（已截断）" else ""}")
+            }
+            "mcp_market" -> {
+                val installName = action.install?.trim()?.takeIf { it.isNotBlank() }
+                if (installName == null) {
+                    // 仅列出：供大脑选择条目名后再安装
+                    val q = action.query?.trim().orEmpty()
+                    val list = com.tapcreator.app.backend.mcp.McpMarket.search(q)
+                    if (list.isEmpty()) {
+                        st.trace += ChatMessage("user", "[观察] MCP 市场没有匹配「$q」的条目。可换关键词或用 mcp_add_server 手动注册端点。")
+                    } else {
+                        val lines = list.joinToString("\n") { e ->
+                            "  - ${e.name}｜${e.category}｜${e.url}\n    ${e.description}"
+                        }
+                        st.trace += ChatMessage(
+                            "user",
+                            "[观察] MCP 市场条目（用 mcp_market 携带 install=条目名 即可安装；api_key 可选）：\n$lines"
+                        )
+                    }
+                } else {
+                    val entry = com.tapcreator.app.backend.mcp.McpMarket.byName(installName)
+                    if (entry == null) {
+                        val names = com.tapcreator.app.backend.mcp.McpMarket.entries.joinToString("、") { it.name }
+                        st.trace += ChatMessage("user", "[工具错误] MCP 市场没有条目「$installName」。可用条目：$names。")
+                    } else if (mcpManager.getServer(entry.name) != null) {
+                        st.trace += ChatMessage("user", "[观察] MCP 服务器「${entry.name}」已注册，可直接用 mcp_list_tools 查看其工具。")
+                    } else {
+                        val server = com.tapcreator.app.backend.mcp.MCPServer(
+                            name = entry.name,
+                            type = entry.type,
+                            command = entry.command,
+                            args = entry.args,
+                            url = entry.url,
+                            env = com.tapcreator.app.backend.mcp.McpMarket.buildEnv(entry, action.api_key.orEmpty()),
+                        )
+                        mcpManager.addServer(server)
+                        st.trace += ChatMessage("user", "[观察] 已从市场安装 MCP 服务器「${entry.name}」（${entry.url}）。可用 mcp_list_tools 查看工具。")
+                    }
+                }
             }
             "configure_model" -> {
                 val mn = action.model_name?.trim()?.takeIf { it.isNotBlank() }
@@ -1423,6 +1482,7 @@ private suspend fun handleBrainCallFailure(
         put("run_id", action.run_id); put("from_card_id", action.from_card_id); put("to_card_id", action.to_card_id)
         put("role", action.role); put("skill_id", action.skill_id); put("command", action.command)
         put("server", action.server); put("arguments", action.arguments); put("name", action.name)
+        put("install", action.install); put("api_key", action.api_key)
         put("category", action.category); put("prompt_guide", action.prompt_guide)
         return m
     }
@@ -1442,5 +1502,20 @@ private suspend fun handleBrainCallFailure(
         private const val VISION_RESULT_LIMIT = 300
         /** 识图校验图片最大字节数（4MB 防 OOM） */
         private const val MAX_VISION_BYTES = 4L * 1024 * 1024
+
+        /**
+         * 清理提示词撰写模式（promptOnly）返回的 summary，得到可直接放进输入框的提示词：
+         * 去 Markdown 围栏、还原转义换行/引号、去掉整体包裹的成对引号。纯函数，可单测。
+         */
+        internal fun cleanPromptText(raw: String): String {
+            var t = raw.trim()
+            if (t.startsWith("```")) {
+                t = t.substringAfter("\n").substringBeforeLast("```").trim().removePrefix("json").trim()
+            }
+            t = t.replace("\\n", "\n").replace("\\\"", "\"").replace("\\t", "\t").replace("\\\\", "\\")
+            t = t.trim()
+            t = t.removeSurrounding("\"").removeSurrounding("“", "”").removeSurrounding("'").trim()
+            return t
+        }
     }
 }

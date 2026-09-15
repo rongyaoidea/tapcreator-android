@@ -5,7 +5,21 @@ package com.tapcreator.app.backend.agent
  * 纯函数，可单测。
  */
 internal object AgentPrompts {
-    fun systemPrompt(cinematic: Boolean, style: String = ""): String {
+
+    /**
+     * 「提示词撰写模式」允许的动作白名单：只读 + 风格 Skill，禁止 generate / 卡片改删 / 编程装包等副作用动作。
+     * 用于「在提示词输入框点一下，唤出 Agent 调用 Skill 把一句话扩写成生成提示词」。
+     */
+    val PROMPT_ONLY_ACTIONS: Set<String> = setOf(
+        "list_skills", "apply_skill",
+        "list_cards", "read_card", "list_assets",
+        "web_search", "fetch_url",
+        "recall", "memorize",
+        "finish",
+    )
+
+    fun systemPrompt(cinematic: Boolean, style: String = "", promptOnly: Boolean = false): String {
+        if (promptOnly) return promptWriterPrompt(style)
         val styleBlock = if (cinematic) """
         3. 视频分镜优化（仅在生成视频任务时应用）：描述"谁在动、怎么动、镜头怎么跟、第几秒发生什么、声音是什么"。按 核心创意→时间轴节奏(按秒分段)→视觉构图(景别/机位)→动态运镜(一种运镜)→光影细节→声音与合成 组织；避免文本字幕/水印/变脸/过度抖动/物理穿帮。图片生成不要套用视频分镜结构，按 主体/动作/场景/光影/风格/构图 组织即可。
         """.trimIndent() else ""
@@ -35,6 +49,32 @@ $styleBlock
 - 需要多步时一步步来：先执行第一步并观察结果，再决定下一步（如先图后视频，用 reference 延续同画面）。
 - 一次只做一件事，输出必须是一个合法 JSON 对象，action 的值必须取自上方工具名。
 - finish 的 summary 字段若包含引号/换行，必须用反斜杠转义，如 `{"action":"finish","summary":"已完成。\\n总共生成 2 张卡片。"}`
+    """.trimIndent()
+    }
+
+    /**
+     * 提示词撰写模式：把用户的一句话诉求扩写成一段可直接用于生成的提示词，不做任何创作副作用动作。
+     * 通过 tools 白名单 + 系统提示双重约束（文本 JSON 模式下也须遵守）。
+     */
+    private fun promptWriterPrompt(style: String): String {
+        val personalStyle = if (style.isNotBlank()) """
+【个人风格偏好】在撰写提示词时贯彻我的偏好：
+$style
+""".trimIndent() else ""
+        return """
+你是 tapcreator 的「提示词撰写助手」。当前不是创作任务：把用户给出的一句话诉求扩写成一段可直接用于图片/视频生成的提示词。
+
+可选动作（只允许这些，其它一律禁止）：
+${AgentToolRegistry.toPromptTable(PROMPT_ONLY_ACTIONS)}
+$personalStyle
+规则（务必遵守）：
+- 禁止 generate，禁止增删改卡片/素材，禁止编程、安装包、MCP 注册等一切有副作用的动作；本轮不产出任何卡片。
+- 若用户指定了设计 Skill，先用 apply_skill 应用它（id 取自上下文或 list_skills），再把它的风格指导融入提示词。
+- 提示词要具体：主体 / 动作 / 场景 / 光影 / 风格 / 构图；视频任务补时序与运镜（按秒分段）。
+- 保留用户原意，不得替换主体或加入与诉求矛盾的元素；只做扩写与风格化。
+- 最终必须用 finish 收尾，且 summary 字段**原样返回提示词本身**：不要解释、不要编号、不要 Markdown 围栏、不要用引号包裹整体。
+- 每次只输出一个 JSON 动作对象，不要任何其它文字。
+示例：{"action":"finish","summary":"一只白猫坐在窗台上晒太阳, soft warm sunlight, cozy interior, detailed fur, photorealistic, cinematic lighting, high quality"}
     """.trimIndent()
     }
 }

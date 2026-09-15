@@ -168,12 +168,15 @@ fun ConversationListScreen(
                                 )
                             }
                             items(items, key = { it.id }) { conv ->
-                                ConversationCard(
-                                    conv = conv,
-                                    onClick = { onOpenChat(conv.id) },
-                                    onDelete = { vm.deleteConversation(conv.id) },
-                                    onRename = { title -> vm.renameConversation(conv.id, title) },
-                                )
+                                // 会话项进出/位置变化平滑过渡（新建、删除、重命名排序）
+                                Column(modifier = Modifier.animateItem()) {
+                                    ConversationCard(
+                                        conv = conv,
+                                        onClick = { onOpenChat(conv.id) },
+                                        onDelete = { vm.deleteConversation(conv.id) },
+                                        onRename = { title -> vm.renameConversation(conv.id, title) },
+                                    )
+                                }
                             }
                         }
                     }

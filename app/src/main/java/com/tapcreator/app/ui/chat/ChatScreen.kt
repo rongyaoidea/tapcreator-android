@@ -4,6 +4,7 @@ import android.widget.Toast
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -105,6 +106,7 @@ import com.tapcreator.app.data.db.MessageEntity
 import com.tapcreator.app.data.model.MediaKind
 import com.tapcreator.app.ui.theme.Dimens
 import com.tapcreator.app.ui.theme.CardButton
+import com.tapcreator.app.ui.theme.MotionSpec
 import com.tapcreator.app.ui.theme.pressSpring
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -244,6 +246,12 @@ fun ChatScreen(
                     run.status == com.tapcreator.app.data.model.RunStatus.PLANNING
                 ) {
                     val (done, total) = viewModel.activeRunProgress()
+                    // 进度条数值平滑过渡（避免 done/total 跳变生硬）
+                    val fraction by androidx.compose.animation.core.animateFloatAsState(
+                        targetValue = if (total == 0) 0f else done.toFloat() / total,
+                        animationSpec = tween(MotionSpec.MediumMs, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                        label = "genProgress",
+                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -251,7 +259,7 @@ fun ChatScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         LinearProgressIndicator(
-                            progress = { if (total == 0) 0f else done.toFloat() / total },
+                            progress = { fraction },
                             modifier = Modifier.weight(1f),
                         )
                         Text(
@@ -313,7 +321,14 @@ fun ChatScreen(
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                AgentSheet(viewModel, onDismiss = { agentOpen = false }, onPickFromLibrary = { libraryPickerOpen = true })
+                // 面板自底部上滑 + 淡入（原则 6 关键姿势）
+                AnimatedVisibility(
+                    visible = true,
+                    enter = MotionSpec.slideUpEnter(),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    AgentSheet(viewModel, onDismiss = { agentOpen = false }, onPickFromLibrary = { libraryPickerOpen = true })
+                }
             }
         }
     }
@@ -885,7 +900,10 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit, onPickFromLibra
             ) {
                 items(vm.agentStream.size) { idx ->
                     val (role, text) = vm.agentStream[idx]
-                    AgentStreamBubble(role = role, text = text)
+                    // 新一行 Agent 对话淡入上浮进场；列表变化（取消/重跑清空）平滑过渡
+                    Box(modifier = Modifier.fillMaxWidth().animateItem()) {
+                        AgentStreamBubble(role = role, text = text)
+                    }
                 }
             }
             // 新输出到达时平滑跟随到底部
@@ -1267,6 +1285,18 @@ private fun SliderFake(vm: ChatViewModel, count: Boolean) {
 @Composable
 private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanvas: () -> Unit = {}, onPickFromLibrary: () -> Unit = {}) {
     val context = LocalContext.current
+    val promptSkills by vm.promptSkills.collectAsStateWithLifecycle()
+    var showSkillPicker by remember { mutableStateOf(false) }
+    if (showSkillPicker) {
+        PromptSkillPickerDialog(
+            skills = promptSkills,
+            onPick = { id ->
+                showSkillPicker = false
+                vm.composePromptWithSkill(id)
+            },
+            onDismiss = { showSkillPicker = false },
+        )
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1274,7 +1304,11 @@ private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanva
         verticalAlignment = Alignment.Bottom,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            if (vm.selectedReferenceCards.isNotEmpty()) {
+            AnimatedVisibility(
+                visible = vm.selectedReferenceCards.isNotEmpty(),
+                enter = MotionSpec.expandEnter(),
+                exit = MotionSpec.expandExit(),
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1296,7 +1330,11 @@ private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanva
                     )
                 }
             }
-            if (vm.selectedReferenceAssets.isNotEmpty()) {
+            AnimatedVisibility(
+                visible = vm.selectedReferenceAssets.isNotEmpty(),
+                enter = MotionSpec.expandEnter(),
+                exit = MotionSpec.expandExit(),
+            ) {
                 Column(modifier = Modifier.padding(bottom = 4.dp)) {
                     Text(
                         text = "已选 ${vm.selectedReferenceAssets.size} 条素材参考：",
@@ -1338,6 +1376,33 @@ private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanva
                     modifier = Modifier.weight(1f),
                 )
                 Switch(checked = vm.promptOptimize, onCheckedChange = { vm.togglePromptOptimize() })
+            }
+            // 唤出 Agent（提示词撰写模式）调用设计 Skill，把上方诉求扩写成提示词并回填
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CardButton(
+                    text = if (vm.promptComposeBusy) "Agent 撰写中…" else "唤出 Agent 写提示词",
+                    onClick = { showSkillPicker = true },
+                    enabled = !vm.promptComposeBusy,
+                    tint = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                if (vm.promptComposeBusy) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text(
+                        text = "选个 Skill，Agent 会调用它扩写提示词",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             OutlinedTextField(
                 value = vm.input,
@@ -1385,6 +1450,77 @@ private fun InputBar(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromCanva
             )
         }
     }
+}
+
+/** 提示词 Skill 选择弹窗：选中的 Skill 由 Agent 在「提示词撰写模式」下调用，把输入扩写成提示词 */
+@Composable
+private fun PromptSkillPickerDialog(
+    skills: List<com.tapcreator.app.data.model.DesignSkill>,
+    onPick: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("用设计 Skill 写提示词") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Agent 会调到所选 Skill 的风格指导，把输入框里的诉求扩写成可直接生成的提示词；不产出卡片，结果回填输入框。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(top = 8.dp),
+                ) {
+                    PromptSkillRow(
+                        name = "不限风格（直接扩写）",
+                        desc = "仅扩写与结构化，不注入特定风格",
+                        onClick = { onPick(null) },
+                    )
+                    skills.forEach { s ->
+                        PromptSkillRow(
+                            name = s.name,
+                            desc = buildString {
+                                append(s.category)
+                                if (s.requiresImage) append(" · 需原图")
+                                if (s.description.isNotBlank()) append(" · ${s.description}")
+                            },
+                            onClick = { onPick(s.id) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+/** 弹窗内单行 Skill 条目（名称 + 分类/描述），点击即选中 */
+@Composable
+private fun PromptSkillRow(name: String, desc: String, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+    ) {
+        Text(name, style = MaterialTheme.typography.bodyMedium)
+        if (desc.isNotBlank()) {
+            Text(
+                text = desc,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 }
 
 /** 引用本会话一张已完成结果卡（图/视频）作为当前生成的参考素材 */

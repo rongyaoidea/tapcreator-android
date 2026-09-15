@@ -130,6 +130,35 @@ class AgentBrainPureFunctionsTest {
         assertNull(result)
     }
 
+    // ============ cleanPromptText（提示词撰写模式回填清理） ============
+
+    @Test
+    fun `cleanPromptText strips markdown fence`() {
+        val raw = "```json\n一只猫在窗台晒太阳, soft light\n```"
+        assertEquals("一只猫在窗台晒太阳, soft light", AgentBrain.cleanPromptText(raw))
+    }
+
+    @Test
+    fun `cleanPromptText unescapes newlines and quotes`() {
+        val raw = """第一行\n第二行 \"引号\""""
+        val cleaned = AgentBrain.cleanPromptText(raw)
+        assertTrue("应还原转义换行", cleaned.contains("\n"))
+        assertTrue("应还原转义引号", cleaned.contains("\""))
+    }
+
+    @Test
+    fun `cleanPromptText removes wrapping quotes`() {
+        assertEquals("赛博朋克城市夜景", AgentBrain.cleanPromptText("\"赛博朋克城市夜景\""))
+        assertEquals("赛博朋克城市夜景", AgentBrain.cleanPromptText("“赛博朋克城市夜景”"))
+        assertEquals("赛博朋克城市夜景", AgentBrain.cleanPromptText("  '赛博朋克城市夜景'  "))
+    }
+
+    @Test
+    fun `cleanPromptText keeps plain prompt unchanged`() {
+        val raw = "一只白猫坐在窗台上晒太阳, warm sunlight, photorealistic"
+        assertEquals(raw, AgentBrain.cleanPromptText(raw))
+    }
+
     // ============ kindOfTool 等价测试 ============
 
     @Test

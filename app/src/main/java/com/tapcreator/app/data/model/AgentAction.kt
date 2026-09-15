@@ -88,6 +88,10 @@ data class AgentAction(
     val server: String? = null,
     /** mcp_call_tool 的参数（JSON 字符串） */
     val arguments: String? = null,
+    /** mcp_market 安装时可选提供的 API Key（写入该条目的鉴权请求头） */
+    val api_key: String? = null,
+    /** mcp_market 安装的目标条目名 */
+    val install: String? = null,
     /** skill_creator 的名称 */
     val name: String? = null,
     /** skill_creator 的分类：photo/poster */

@@ -1,9 +1,14 @@
 package com.tapcreator.app.ui.nav
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -42,6 +47,15 @@ private val TAB_ITEMS = listOf(
     Triple(ROUTE_SETTINGS, "设置", "settings"),
 )
 
+/** 底部 tab 切换：Material 3 fade-through（淡出淡入 + 轻微缩放），避免左右滑动与底部栏语义冲突 */
+private fun tabEnter(): EnterTransition = fadeIn(tween(220)) + scaleIn(initialScale = 0.97f, animationSpec = tween(220))
+private fun tabExit(): ExitTransition = fadeOut(tween(180)) + scaleOut(targetScale = 0.98f, animationSpec = tween(180))
+
+/** 二级页面（chat/tasks）：从右侧推入（钻取语义），返回时向右侧滑出 */
+private fun pushEnter(): EnterTransition = slideInHorizontally(tween(260)) { it / 4 } + fadeIn(tween(220))
+private fun pushExit(): ExitTransition = fadeOut(tween(180))
+private fun popExit(): ExitTransition = slideOutHorizontally(tween(220)) { it / 4 } + fadeOut(tween(180))
+
 @Composable
 fun TapcreatorNav(startRoute: String) {
     val nav = rememberNavController()
@@ -78,8 +92,8 @@ fun TapcreatorNav(startRoute: String) {
             ) {
                 composable(
                     ROUTE_HOME,
-                    enterTransition = { fadeIn(tween(220)) + scaleIn(initialScale = 0.97f, animationSpec = tween(220)) },
-                    exitTransition = { fadeOut(tween(180)) },
+                    enterTransition = { tabEnter() },
+                    exitTransition = { tabExit() },
                 ) {
                     val vm: ConversationListViewModel = hiltViewModel()
                     ConversationListScreen(
@@ -92,8 +106,9 @@ fun TapcreatorNav(startRoute: String) {
                 }
                 composable(
                     ROUTE_CHAT,
-                    enterTransition = { fadeIn(tween(220)) },
-                    exitTransition = { fadeOut(tween(180)) },
+                    enterTransition = { pushEnter() },
+                    exitTransition = { pushExit() },
+                    popExitTransition = { popExit() },
                 ) { entry ->
                     val conversationId = entry.arguments?.getString("conversationId").orEmpty()
                     ChatScreen(
@@ -103,22 +118,23 @@ fun TapcreatorNav(startRoute: String) {
                 }
                 composable(
                     ROUTE_TASKS,
-                    enterTransition = { fadeIn(tween(220)) },
-                    exitTransition = { fadeOut(tween(180)) },
+                    enterTransition = { pushEnter() },
+                    exitTransition = { pushExit() },
+                    popExitTransition = { popExit() },
                 ) {
                     TasksScreen(onBack = { nav.popBackStack() })
                 }
                 composable(
                     ROUTE_SETTINGS,
-                    enterTransition = { fadeIn(tween(220)) },
-                    exitTransition = { fadeOut(tween(180)) },
+                    enterTransition = { tabEnter() },
+                    exitTransition = { tabExit() },
                 ) {
                     SettingsScreen()
                 }
                 composable(
                     ROUTE_LIBRARY,
-                    enterTransition = { fadeIn(tween(220)) },
-                    exitTransition = { fadeOut(tween(180)) },
+                    enterTransition = { tabEnter() },
+                    exitTransition = { tabExit() },
                 ) {
                     LibraryScreen()
                 }

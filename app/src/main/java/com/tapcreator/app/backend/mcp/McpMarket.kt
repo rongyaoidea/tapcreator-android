@@ -46,6 +46,7 @@ object McpMarket {
             description = "Context7：查询任意库/框架的最新官方文档与代码示例（匿名可用，API Key 可提升限额）",
             type = "http", command = "", args = emptyList(),
             url = "https://mcp.context7.com/mcp", category = "开发",
+            apiKeyEnvKey = "CONTEXT7_API_KEY", apiKeyLabel = "Context7 API Key（可选）",
         ),
     )
 
@@ -56,5 +57,22 @@ object McpMarket {
         return entries.filter {
             it.name.lowercase().contains(q) || it.description.lowercase().contains(q) || it.category.lowercase().contains(q)
         }
+    }
+
+    /** 按名称查找市场条目（先精确、再双向包含），供 Agent 一键安装。 */
+    fun byName(name: String): McpMarketEntry? {
+        val n = name.trim()
+        if (n.isEmpty()) return null
+        return entries.firstOrNull { it.name.equals(n, ignoreCase = true) }
+            ?: entries.firstOrNull {
+                it.name.contains(n, ignoreCase = true) || n.contains(it.name, ignoreCase = true)
+            }
+    }
+
+    /** 构造安装条目的鉴权请求头/环境变量：声明了 header 名且提供了 Key 时才写入（Key 为空 = 匿名）。 */
+    fun buildEnv(entry: McpMarketEntry, apiKey: String): Map<String, String> {
+        val key = apiKey.trim()
+        if (key.isEmpty() || entry.apiKeyEnvKey.isBlank()) return emptyMap()
+        return mapOf(entry.apiKeyEnvKey to key)
     }
 }
