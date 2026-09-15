@@ -35,6 +35,19 @@ android {
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 
+    // signingConfigs 必须先于 buildTypes 声明：release 里 getByName("release") 是立即求值，
+    // 写在后面会导致 SigningConfig with name 'release' not found（本地无 signing.properties
+    // 时因 ?.let 短路从未暴露，CI 写密钥后才炸）。
+    signingConfigs {
+        create("release") {
+            signingPropertiesFile()?.let { props ->
+                storeFile = File(props.getProperty("keystoreFile", ""))
+                storePassword = props.getProperty("keystorePassword", "")
+                keyAlias = props.getProperty("keyAlias", "")
+                keyPassword = props.getProperty("keyPassword", "")
+            }
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -49,16 +62,6 @@ android {
                 if (storePath != null && File(storePath).exists()) {
                     signingConfig = signingConfigs.getByName("release")
                 }
-            }
-        }
-    }
-    signingConfigs {
-        create("release") {
-            signingPropertiesFile()?.let { props ->
-                storeFile = File(props.getProperty("keystoreFile", ""))
-                storePassword = props.getProperty("keystorePassword", "")
-                keyAlias = props.getProperty("keyAlias", "")
-                keyPassword = props.getProperty("keyPassword", "")
             }
         }
     }
@@ -152,9 +155,9 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
 }
 
-/** 读取模块级 signing.properties（可缺省），返回 null 表示未配置，用于按需启用 release 签名 */
+/** 读取 signing.properties（可缺省）：优先模块级 app/，回退工程根；都不存在返回 null，未配置则 release 不签名 */
 fun signingPropertiesFile(): Properties? {
-    val file = File("signing.properties")
-    if (!file.exists()) return null
+    val file = listOf(File("$projectDir/signing.properties"), File("signing.properties")).firstOrNull { it.exists() }
+        ?: return null
     return Properties().apply { file.inputStream().use { load(it) } }
 }
