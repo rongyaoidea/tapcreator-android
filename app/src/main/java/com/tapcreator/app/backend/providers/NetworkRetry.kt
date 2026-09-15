@@ -3,6 +3,7 @@ package com.tapcreator.app.backend.providers
 import com.tapcreator.app.data.model.TapcreatorException
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -19,7 +20,7 @@ internal object NetworkRetry {
         var last: IOException? = null
         repeat(3) { i ->
             try {
-                ensureActive()
+                currentCoroutineContext().ensureActive()
                 return withContext(Dispatchers.IO) { client.newCall(builder.build()).execute() }
             } catch (e: IOException) {
                 last = e

@@ -231,7 +231,7 @@ class ProviderGateway @Inject constructor(
         }
     }
 
-    private fun openAiCreate(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+    private suspend fun openAiCreate(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         return when (prefs.kind) {
             MediaKind.TEXT -> openAiChat(channel, secrets, model, prefs)
             MediaKind.IMAGE -> openAiImage(channel, secrets, model, prefs)
@@ -246,7 +246,7 @@ class ProviderGateway @Inject constructor(
      * 生成与上一段视觉连续的下一段，再于设备端拼接成超时长视频。
      * 端点映射 OpenAI 兼容聚合商通用的 /videos/generations；不同渠道可在 baseUrl 处接入。
      */
-    private fun openAiVideo(
+    private suspend fun openAiVideo(
         channel: Channel,
         secrets: ChannelSecrets,
         model: ModelOption,
@@ -617,7 +617,7 @@ class ProviderGateway @Inject constructor(
 
     private fun emptyJsonObject(): kotlinx.serialization.json.JsonObject = buildJsonObject { }
 
-    private fun openAiChat(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+    private suspend fun openAiChat(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val refSnippet = prefs.referenceTexts.joinToString("\n", prefix = "参考素材：", postfix = "\n\n")
         val userContent = if (prefs.referenceImages.isEmpty()) {
             json.encodeToJsonElement(refSnippet + prefs.prompt)
@@ -661,7 +661,7 @@ class ProviderGateway @Inject constructor(
         return UpstreamResult(kind = MediaKind.TEXT, text = content, mime = "text/plain")
     }
 
-    private fun openAiImage(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+    private suspend fun openAiImage(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val hasRef = prefs.referenceImages.isNotEmpty()
         if (hasRef) {
             val mode = ModelProfileCatalog.imageRefMode(channel.baseUrl, model.name, model.id)
@@ -703,7 +703,7 @@ class ProviderGateway @Inject constructor(
      * （字符串数组，URL 或 data:image/..;base64 均可，多张=多图合成）。response_format 亦须在
      * extra_body 内（顶层会 400）。
      */
-    private fun openAiImageAgnes(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+    private suspend fun openAiImageAgnes(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val res = normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
             ?: prefs.resolution?.takeIf { it.contains('x') }
             ?: prefs.ratio?.let(::ratioToSize)
@@ -738,7 +738,7 @@ class ProviderGateway @Inject constructor(
      * 商汤官方平台图生图：POST /v1/images/edits（官方文档），image=纯 base64，model=sensenova-u1.5-lite 等。
      * 参数：model/prompt/image/size/n/output_format/response_format/watermark/prompt_extend。
      */
-    private fun openAiImageEditsSensenova(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+    private suspend fun openAiImageEditsSensenova(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val imageB64 = prefs.referenceImages.firstOrNull()?.substringAfter(";base64,", "")?.takeIf { it.isNotEmpty() }
             ?: throw TapcreatorException("SenseNova 图生图缺少参考图 base64", "REF_IMAGE_EMPTY")
         android.util.Log.i("ProviderGateway", "openAiImageEditsSensenova: 参考图 ${prefs.referenceImages.size} 张，size=${imageB64.take(24)}...")
@@ -795,7 +795,7 @@ class ProviderGateway @Inject constructor(
      * OpenAI 规范 multipart /images/edits 图生图（多数聚合平台/自部署：APIYI、Gitee AI、stable-diffusion.cpp 等）。
      * multipart form-data：model/prompt/n/size + image 文件。解析 data[0].b64_json 或 url。
      */
-    private fun openAiImageEditsMultipart(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+    private suspend fun openAiImageEditsMultipart(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val dataUri = prefs.referenceImages.firstOrNull()
             ?: throw TapcreatorException("图生图缺少参考图", "REF_IMAGE_EMPTY")
         val b64 = dataUri.substringAfter(";base64,", dataUri)
@@ -830,7 +830,7 @@ class ProviderGateway @Inject constructor(
     }
 
     /** OpenAI 兼容 /images/generations 图生图；带参考图时尽力上送 image 参数（400/422 明确报错不静默） */
-    private fun openAiImageGenerations(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+    private suspend fun openAiImageGenerations(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val refSnippet = prefs.referenceTexts.joinToString("\n", prefix = "参考素材：", postfix = "\n\n")
         // 每次只请求一张：数量(count)由 TaskExecutor 在设备内循环调用保证，便于逐卡落库与进度汇报
         val res = normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
@@ -886,7 +886,7 @@ class ProviderGateway @Inject constructor(
      * [image_url(参考图 data URI)…, text(提示词)]，modalities=["image"]，image_config 控制出图尺寸。
      * 参考图多张全部上送（官方 it2i 模式），返回 images[].image_url.data URI。
      */
-    private fun openAiChatImageMultimodal(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+    private suspend fun openAiChatImageMultimodal(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val refImages = prefs.referenceImages
         android.util.Log.i("ProviderGateway", "openAiChatImageMultimodal: 参考图 ${refImages.size} 张，模型 ${model.name}")
         val res = normalizeResolution(model, MediaKind.IMAGE, prefs.resolution, prefs.ratio, prefs.quality)
@@ -961,7 +961,7 @@ class ProviderGateway @Inject constructor(
         throw TapcreatorException("上游未返回图片（chat 多模态响应无 images）", "UPSTREAM_EMPTY")
     }
 
-    private fun openAiAudio(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
+    private suspend fun openAiAudio(channel: Channel, secrets: ChannelSecrets, model: ModelOption, prefs: GenerationPreferences): UpstreamResult {
         val refSnippet = prefs.referenceTexts.joinToString("\n", prefix = "参考素材：", postfix = "\n\n")
         // OpenAI 兼容 TTS：/audio/speech 返回二进制音频而非 JSON，需用 raw 字节通道
         val body = buildJsonObject {

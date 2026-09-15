@@ -116,8 +116,9 @@ jobs:
         run: chmod +x gradlew
 
       - name: Prepare signing
-        # 正式 keystore 走 Secrets；无 Secrets 时用 CI 临时 key 签名，保证产物可安装。
-        # app/build.gradle.kts 无 signing.properties 则退回未签名，故此处必写一份。
+        # 发布密钥唯一来源：GitHub Secrets（固定复用，见仓库 Settings → Secrets）。
+        # Tag 发布构建若无 Secrets 直接失败，杜绝临时密钥导致签名漂移；
+        # 日常 push/PR 无 Secrets 时用临时密钥兜底，保证流水线可跑通。
         run: |
           if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
             echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > $RUNNER_TEMP/release.keystore
@@ -126,17 +127,26 @@ jobs:
               "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
               "${{ secrets.ANDROID_KEY_ALIAS }}" \
               "${{ secrets.ANDROID_KEY_PASSWORD }}" > signing.properties
+            echo "使用 Secrets 中的固定发布密钥签名"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "::error::Tag 发布构建缺少签名 Secrets（ANDROID_KEYSTORE_BASE64 等），拒绝用临时密钥签名"
+            exit 1
           else
             keytool -genkeypair -keystore $RUNNER_TEMP/ci.keystore -alias ci -keyalg RSA -keysize 2048 \
               -validity 3650 -storepass android -keypass android -dname "CN=TapcreatorCI" -noprompt
             printf 'keystoreFile=%s\nkeystorePassword=android\nkeyAlias=ci\nkeyPassword=android\n' \
               "$RUNNER_TEMP/ci.keystore" > signing.properties
+            echo "Secrets 缺失（非 Tag 构建），使用临时密钥签名"
           fi
           cp signing.properties app/signing.properties
-          echo "signing.properties 已生成（内容已脱敏，仅路径可见）："; ls -l signing.properties app/signing.properties
 
       - name: Assemble release APK
         run: ./gradlew assembleRelease --stacktrace --console=plain
+
+      - name: Verify APK signature
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -1)
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/*.apk | head -8
 
       - name: Upload release APK + mapping
         uses: actions/upload-artifact@v4

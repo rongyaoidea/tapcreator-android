@@ -68,6 +68,8 @@ android {
     }
     buildFeatures {
         compose = true
+        // AppModule 按 BuildConfig.DEBUG 决定是否挂 OkHttp 日志拦截器，需显式开启（AGP8 默认关闭）
+        buildConfig = true
     }
     // Room schema 导出目录：exportSchema=true 时由 KSP 写入此目录，JSON 快照入 git 便于迁移 diff
     ksp {
