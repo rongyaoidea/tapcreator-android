@@ -16,6 +16,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
@@ -26,6 +28,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -45,6 +48,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
@@ -88,6 +92,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
@@ -103,7 +108,9 @@ import coil.compose.AsyncImage
 import com.tapcreator.app.data.db.AssetEntity
 import com.tapcreator.app.data.db.CardEntity
 import com.tapcreator.app.data.db.MessageEntity
+import com.tapcreator.app.data.db.ModelOptionEntity
 import com.tapcreator.app.data.model.MediaKind
+import com.tapcreator.app.data.model.NodeParams
 import com.tapcreator.app.ui.theme.Dimens
 import com.tapcreator.app.ui.theme.CardButton
 import com.tapcreator.app.ui.theme.MotionSpec
@@ -153,6 +160,20 @@ fun ChatScreen(
     var canvasMenuOpen by remember { mutableStateOf(false) }
     // 快照历史面板
     var snapshotSheetOpen by remember { mutableStateOf(false) }
+    // 节点面板（新建文本/音频/上传/角色等节点）
+    var paletteOpen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val mediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            viewModel.importLocalMedia(uri)
+        }
+    }
     // 打开发卡编辑面板的回调（供 CreationCard/InputBar 使用）：
     // 从素材库选取完成或取消时重新打开编辑面板
     fun reopenDraftEditor() {
@@ -202,9 +223,15 @@ fun ChatScreen(
                         { card -> previewCard = card }
                     },
                     onOpenNodeMenu = viewModel::openNodeMenu,
+                    onRunNode = { card -> viewModel.regenerateNode(card, asVariant = true) },
                     onConnect = { from, to -> viewModel.linkReference(from, to) },
                     onDoubleTapEmpty = { viewModel.startDraft(viewModel.selectedKind) },
                     onOpenCanvasMenu = { canvasMenuOpen = true },
+                    onRerunSelected = viewModel::rerunSelectedNodes,
+                    onUndo = viewModel::undoCanvas,
+                    onRedo = viewModel::redoCanvas,
+                    canUndo = viewModel.canUndo,
+                    canRedo = viewModel.canRedo,
                     canConnect = { from, to ->
                         viewModel.isCharacterNode(from) || viewModel.canServeAsReference(from.kind, to.kind)
                     },
@@ -239,12 +266,34 @@ fun ChatScreen(
                 }
                 if (cards.isEmpty()) {
                     Text(
-                        text = "画布为空 —— 点下方「生图/生视频」新建卡片开始创作",
+                        text = "画布为空 —— 点下方「新建」添加节点开始创作",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.align(Alignment.Center).padding(horizontal = 24.dp),
                     )
+                }
+                // 画布内 Agent 面板：可收起，不遮挡整块画布（对齐竞品「Agent 常驻画布」）
+                if (agentOpen) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .fillMaxHeight(0.74f)
+                            // 面板内空白区域也吞掉手势，避免拖动穿透到下层画布
+                            .pointerInput(Unit) { detectTapGestures { } }
+                            .pointerInput(Unit) { detectDragGestures { change, _ -> change.consume() } },
+                        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 8.dp,
+                        shadowElevation = 12.dp,
+                    ) {
+                        AgentSheet(
+                            vm = viewModel,
+                            onDismiss = { agentOpen = false },
+                            onPickFromLibrary = { libraryPickerOpen = true },
+                        )
+                    }
                 }
             }
 
@@ -313,36 +362,18 @@ fun ChatScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             )
 
-            // 底部仅保留两个入口：生图 / 生视频
+            // 底部入口：新建（节点面板）/ 生图 / 生视频 / Agent
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                BottomActionButton(text = "新建", tint = MaterialTheme.colorScheme.tertiary, icon = Icons.Filled.Add, onClick = { paletteOpen = true })
                 BottomActionButton(text = "生图", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.Image, onClick = { viewModel.startDraft(MediaKind.IMAGE) })
                 BottomActionButton(text = "生视频", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.Movie, onClick = { viewModel.startDraft(MediaKind.VIDEO) })
-                BottomActionButton(text = "Agent", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.AutoAwesome, onClick = { agentOpen = true })
+                BottomActionButton(text = "Agent", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.AutoAwesome, onClick = { agentOpen = !agentOpen })
             }
-            }
-        }
-    }
-
-    // 自主 Agent：全屏页面（覆盖创作工作区），带返回按钮关闭
-    if (agentOpen) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { agentOpen = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                // 面板自底部上滑 + 淡入（原则 6 关键姿势）
-                AnimatedVisibility(
-                    visible = true,
-                    enter = MotionSpec.slideUpEnter(),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    AgentSheet(viewModel, onDismiss = { agentOpen = false }, onPickFromLibrary = { libraryPickerOpen = true })
-                }
             }
         }
     }
@@ -492,7 +523,7 @@ fun ChatScreen(
         NodeMenuSheet(
             card = card,
             onDismiss = viewModel::dismissNodeMenu,
-            onViewParams = { viewModel.openNodeParams(card) },
+            onViewParams = { viewModel.openNodeInspector(card) },
             onRegenerate = { viewModel.regenerateNode(card, asVariant = true) },
             onDuplicate = { viewModel.duplicateNodeAsVariant(card) },
             onRerunDownstream = { viewModel.rerunDownstream(card) },
@@ -501,9 +532,15 @@ fun ChatScreen(
         )
     }
 
-    // 节点参数详情（自描述节点的可复现参数）
-    viewModel.nodeParamsCard?.let { card ->
-        NodeParamsDialog(card = card, onDismiss = viewModel::dismissNodeParams)
+    // 节点检查器：编辑参数/换模型后原地重跑
+    viewModel.nodeInspectorCard?.let { card ->
+        NodeInspectorSheet(
+            card = card,
+            models = viewModel.nodeModels,
+            onDismiss = viewModel::dismissNodeInspector,
+            onSave = { edited -> viewModel.saveNodeParams(card, edited) },
+            onSaveAndRun = { edited -> viewModel.rerunNodeWithParams(card, edited) },
+        )
     }
 
     // 画布「更多」：快照 / 快照历史 / 合成成片 / 角色节点
@@ -542,6 +579,67 @@ fun ChatScreen(
             onDelete = { viewModel.deleteSnapshot(it) },
         )
     }
+
+    // 节点面板：新建各类节点（文本/音频/上传/角色）
+    if (paletteOpen) {
+        NodePaletteSheet(
+            onDismiss = { paletteOpen = false },
+            onPickKind = { kind ->
+                viewModel.startDraft(kind)
+                paletteOpen = false
+            },
+            onUpload = {
+                mediaPicker.launch(arrayOf("image/*", "audio/*", "video/*"))
+                paletteOpen = false
+            },
+            folders = assetFolders,
+            onPickCharacter = { folder ->
+                viewModel.createCharacterNode(folder)
+                paletteOpen = false
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NodePaletteSheet(
+    onDismiss: () -> Unit,
+    onPickKind: (MediaKind) -> Unit,
+    onUpload: () -> Unit,
+    folders: List<com.tapcreator.app.data.db.AssetFolderEntity>,
+    onPickCharacter: (com.tapcreator.app.data.db.AssetFolderEntity) -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 560.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            Text("新建节点", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
+            SheetAction("图片节点", "文生图 / 图生图", { onPickKind(MediaKind.IMAGE) })
+            SheetAction("视频节点", "文/图生视频，可引用上游节点", { onPickKind(MediaKind.VIDEO) })
+            SheetAction("文本节点", "脚本 / 旁白 / 提示词草稿", { onPickKind(MediaKind.TEXT) })
+            SheetAction("音频节点", "配音 / 音效 / 音色参考", { onPickKind(MediaKind.AUDIO) })
+            SheetAction("上传媒体", "把本地图片/视频/音频登记为素材", onUpload)
+            Text(
+                "角色节点",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+            )
+            if (folders.isEmpty()) {
+                Text("暂无素材文件夹（在素材库创建角色/产品文件夹）", style = MaterialTheme.typography.labelSmall)
+            } else {
+                folders.forEach { f ->
+                    SheetAction(f.name, "类型：${f.kind}", { onPickCharacter(f) })
+                }
+            }
+            androidx.compose.foundation.layout.Spacer(Modifier.padding(bottom = 12.dp))
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -575,7 +673,7 @@ private fun NodeMenuSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 6.dp),
             )
-            SheetAction("查看生成参数", "提示词 / 模型 / 比例 / 时长", onViewParams)
+            SheetAction("编辑参数 / 重跑", "改提示词、换模型、调比例后原地重跑", onViewParams)
             SheetAction("重新生成为变体", "保留原节点，用相同参数重跑一份", onRegenerate)
             SheetAction("复制节点", "复制参数与引用，之后可单独改", onDuplicate)
             SheetAction("重跑下游节点", "沿引用链重算所有下游", onRerunDownstream)
@@ -609,47 +707,126 @@ private fun SheetAction(title: String, subtitle: String, onClick: () -> Unit, da
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun NodeParamsDialog(card: CardEntity, onDismiss: () -> Unit) {
-    val p = com.tapcreator.app.data.model.NodeParams.fromJson(card.paramsJson)
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("节点生成参数") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (p == null) {
-                    Text("该节点未留存生成参数（旧数据）。", style = MaterialTheme.typography.bodySmall)
-                } else {
-                    ParamRow("类型", card.kind.name)
-                    ParamRow("模型", p.modelName.ifBlank { p.modelId })
-                    p.ratio?.let { ParamRow("比例", it) }
-                    p.resolution?.let { ParamRow("分辨率", it) }
-                    p.seconds?.let { ParamRow("时长", "${it}s") }
-                    p.quality?.let { ParamRow("质量", it) }
-                    if (p.referenceCardIds.isNotEmpty()) ParamRow("参考", "${p.referenceCardIds.size} 个节点")
-                    ParamRow("提示词", p.prompt.ifBlank { "（空）" })
+private fun NodeInspectorSheet(
+    card: CardEntity,
+    models: List<ModelOptionEntity>,
+    onDismiss: () -> Unit,
+    onSave: (NodeParams) -> Unit,
+    onSaveAndRun: (NodeParams) -> Unit,
+) {
+    val original = remember(card.id) { NodeParams.fromJson(card.paramsJson) ?: NodeParams() }
+    var prompt by remember(card.id) { mutableStateOf(original.prompt) }
+    var modelId by remember(card.id) { mutableStateOf(original.modelId) }
+    var ratio by remember(card.id) { mutableStateOf(original.ratio.orEmpty()) }
+    var resolution by remember(card.id) { mutableStateOf(original.resolution.orEmpty()) }
+    var seconds by remember(card.id) { mutableStateOf((original.seconds ?: 5).toString()) }
+    val shownModels = remember(models) { models.filter { it.enabled } }
+
+    fun edited(): NodeParams = original.copy(
+        prompt = prompt.trim(),
+        modelId = modelId,
+        modelName = shownModels.firstOrNull { it.id == modelId }?.name ?: original.modelName,
+        ratio = ratio.trim().ifBlank { null },
+        resolution = resolution.trim().ifBlank { null },
+        seconds = seconds.toIntOrNull(),
+    )
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 620.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            Text("节点参数", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "${card.kind.name} · v${card.version}" + (if (card.variantOf != null) " · 变体" else ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            OutlinedTextField(
+                value = prompt,
+                onValueChange = { prompt = it },
+                label = { Text("提示词") },
+                minLines = 3,
+                maxLines = 8,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (shownModels.isNotEmpty()) {
+                Text(
+                    text = "模型",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    shownModels.forEach { m ->
+                        FilterChip(
+                            selected = modelId == m.id,
+                            onClick = { modelId = m.id },
+                            label = { Text(m.name, style = MaterialTheme.typography.labelSmall) },
+                            colors = FilterChipDefaults.filterChipColors(),
+                        )
+                    }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
-}
-
-@Composable
-private fun ParamRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(64.dp),
-        )
-        Text(text = value, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            if (card.kind == MediaKind.IMAGE || card.kind == MediaKind.VIDEO) {
+                Text(
+                    text = "画幅",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    RATIOS.forEach { r ->
+                        FilterChip(
+                            selected = ratio == r,
+                            onClick = { ratio = r },
+                            label = { Text(r, style = MaterialTheme.typography.labelSmall) },
+                            colors = FilterChipDefaults.filterChipColors(),
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = resolution,
+                    onValueChange = { resolution = it },
+                    label = { Text("分辨率") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                if (card.kind == MediaKind.VIDEO) {
+                    OutlinedTextField(
+                        value = seconds,
+                        onValueChange = { seconds = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("时长(秒)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.width(110.dp),
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 14.dp, bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                TextButton(onClick = onDismiss) { Text("取消") }
+                androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                CardButton("仅保存", onClick = { onSave(edited()) })
+                CardButton("保存并重跑", onClick = { onSaveAndRun(edited()) })
+            }
+        }
     }
 }
 

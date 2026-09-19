@@ -636,9 +636,11 @@ class ChatViewModel @Inject constructor(
     fun commitNodePositions(updates: List<Pair<String, Pair<Float, Float>>>) {
         if (updates.isEmpty()) return
         viewModelScope.launch {
+            val before = captureCanvasState()
             runCatching {
                 updates.forEach { (id, p) -> db.cardDao().updatePosition(id, p.first, p.second) }
             }.onFailure { e -> lastError = e.message ?: "保存节点位置失败" }
+            pushUndo(before, captureCanvasState())
         }
     }
 
@@ -647,12 +649,14 @@ class ChatViewModel @Inject constructor(
         val ids = selectedCanvasIds.toList()
         if (ids.isEmpty()) return
         viewModelScope.launch {
+            val before = captureCanvasState()
             runCatching {
                 ids.forEach { id ->
                     db.cardLinkDao().deleteForCard(id)
                     db.cardDao().softDelete(id)
                 }
             }.onFailure { e -> lastError = e.message ?: "批量删除失败" }
+            pushUndo(before, captureCanvasState())
         }
         selectedCanvasIds = emptySet()
         markStateChanged()
@@ -663,6 +667,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             val cs = runCatching { db.cardDao().listByConversation(conversationId) }.getOrNull().orEmpty()
             if (cs.isEmpty()) return@launch
+            val before = captureCanvasState()
             val idSet = cs.map { it.id }.toSet()
             val edges = cs.flatMap { db.cardLinkDao().outgoing(it.id) }
                 .map { it.fromCardId to it.toCardId }
@@ -672,7 +677,8 @@ class ChatViewModel @Inject constructor(
                 nodes = cs.map { CanvasLayout.Node(it.id, it.kind) },
                 edges = edges,
             )
-            commitNodePositions(placements.map { it.id to (it.x to it.y) })
+            placements.forEach { p -> db.cardDao().updatePosition(p.id, p.x, p.y) }
+            pushUndo(before, captureCanvasState())
         }
     }
 
@@ -1111,8 +1117,12 @@ class ChatViewModel @Inject constructor(
     var nodeMenuCard by mutableStateOf<CardEntity?>(null)
         private set
 
-    /** 节点参数详情当前目标卡（null=关闭） */
-    var nodeParamsCard by mutableStateOf<CardEntity?>(null)
+    /** 节点检查器：编辑参数/换模型后原地重跑（null=关闭） */
+    var nodeInspectorCard by mutableStateOf<CardEntity?>(null)
+        private set
+
+    /** 检查器里该节点类型的可选模型 */
+    var nodeModels by mutableStateOf<List<ModelOptionEntity>>(emptyList())
         private set
 
     /** 画布快照列表（最近优先） */
@@ -1139,13 +1149,151 @@ class ChatViewModel @Inject constructor(
         nodeMenuCard = null
     }
 
-    fun openNodeParams(card: CardEntity) {
-        nodeParamsCard = card
+    fun openNodeInspector(card: CardEntity) {
+        nodeInspectorCard = card
         nodeMenuCard = null
+        viewModelScope.launch {
+            nodeModels = runCatching { router.models(card.kind) }.getOrDefault(emptyList())
+        }
     }
 
-    fun dismissNodeParams() {
-        nodeParamsCard = null
+    fun dismissNodeInspector() {
+        nodeInspectorCard = null
+    }
+
+    /** 仅保存节点参数（不重跑） */
+    fun saveNodeParams(card: CardEntity, edited: NodeParams) {
+        viewModelScope.launch {
+            runCatching {
+                db.cardDao().updateParams(
+                    card.id,
+                    edited.copy(variantOf = card.variantOf).toJson(),
+                    card.version,
+                    card.variantOf,
+                )
+                nodeInspectorCard = null
+                toast("参数已保存")
+            }.onFailure { e -> lastError = e.message ?: "保存参数失败" }
+            markStateChanged()
+        }
+    }
+
+    /** 保存参数并立即重跑该节点（产出为变体） */
+    fun rerunNodeWithParams(card: CardEntity, edited: NodeParams) {
+        val t = token ?: return
+        viewModelScope.launch {
+            val before = captureCanvasState()
+            try {
+                db.cardDao().updateParams(
+                    card.id,
+                    edited.copy(variantOf = card.variantOf).toJson(),
+                    card.version,
+                    card.variantOf,
+                )
+                nodeInspectorCard = null
+                val ok = regenerateOnce(card, t, asVariant = true, override = edited)
+                if (!ok) toast("没有可复现的参数或未产出结果")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                lastError = e.message ?: "重跑失败"
+            }
+            pushUndo(before, captureCanvasState())
+            markStateChanged()
+        }
+    }
+
+    /** 批量重跑选中的节点（仅对有留存参数的节点生效） */
+    fun rerunCards(targets: List<CardEntity>) {
+        val t = token ?: return
+        val runnable = targets.filter {
+            it.runId != "film" && !isCharacterNode(it) &&
+                NodeParams.fromJson(it.paramsJson)?.prompt?.isNotBlank() == true
+        }
+        if (runnable.isEmpty()) {
+            toast("所选节点没有可复现参数")
+            return
+        }
+        viewModelScope.launch {
+            val before = captureCanvasState()
+            try {
+                runnable.forEach { c -> regenerateOnce(c, t, asVariant = true) }
+                toast("已重跑 ${runnable.size} 个节点")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                lastError = e.message ?: "批量重跑失败"
+            }
+            pushUndo(before, captureCanvasState())
+            markStateChanged()
+        }
+    }
+
+    /** 批量重跑当前画布选中的节点 */
+    fun rerunSelectedNodes() {
+        rerunCards(cards.value.filter { it.id in selectedCanvasIds })
+    }
+
+    // ---------- 画布撤销/重做：快照式（节点行 + 关系边），覆盖移动/增删/连线/整理 ----------
+
+    private data class CanvasState(val cards: List<CardEntity>, val links: List<CardLinkEntity>)
+
+    private val undoStack = java.util.ArrayDeque<CanvasState>()
+    private val redoStack = java.util.ArrayDeque<CanvasState>()
+
+    var canUndo by mutableStateOf(false)
+        private set
+    var canRedo by mutableStateOf(false)
+        private set
+
+    private suspend fun captureCanvasState(): CanvasState = CanvasState(
+        cards = runCatching { db.cardDao().listAllByConversation(conversationId) }.getOrDefault(emptyList()),
+        links = runCatching { db.cardLinkDao().listByConversation(conversationId) }.getOrDefault(emptyList()),
+    )
+
+    /** 恢复到某画布状态：删除多出的行、REPLACE 恢复目标行、重建关系边 */
+    private suspend fun applyCanvasState(state: CanvasState) {
+        val currentIds = db.cardDao().listAllByConversation(conversationId).map { it.id }.toSet()
+        val targetIds = state.cards.map { it.id }.toSet()
+        (currentIds - targetIds).forEach { db.cardDao().hardDelete(it) }
+        state.cards.forEach { db.cardDao().insert(it) }
+        db.cardLinkDao().deleteByConversation(conversationId)
+        state.links.forEach { db.cardLinkDao().insert(it) }
+    }
+
+    private fun updateUndoFlags() {
+        canUndo = undoStack.isNotEmpty()
+        canRedo = redoStack.isNotEmpty()
+    }
+
+    private fun pushUndo(before: CanvasState, after: CanvasState) {
+        if (before == after) return
+        undoStack.addLast(before)
+        while (undoStack.size > 20) undoStack.removeFirst()
+        redoStack.clear()
+        updateUndoFlags()
+    }
+
+    fun undoCanvas() {
+        viewModelScope.launch {
+            val target = undoStack.pollLast() ?: return@launch
+            redoStack.addLast(captureCanvasState())
+            applyCanvasState(target)
+            clearCanvasSelection()
+            updateUndoFlags()
+            markStateChanged()
+        }
+    }
+
+    fun redoCanvas() {
+        viewModelScope.launch {
+            val target = redoStack.pollLast() ?: return@launch
+            undoStack.addLast(captureCanvasState())
+            applyCanvasState(target)
+            clearCanvasSelection()
+            updateUndoFlags()
+            markStateChanged()
+        }
     }
 
     /** 判断一张卡是否为「角色节点」（绑定素材文件夹，作身份锚点参考） */
@@ -1160,8 +1308,15 @@ class ChatViewModel @Inject constructor(
     }
 
     /** 内部：用节点留存参数重跑一次，产出标记为变体并建 parent 边。返回是否有产出。 */
-    private suspend fun regenerateOnce(card: CardEntity, token: String, asVariant: Boolean): Boolean {
-        val p = NodeParams.fromJson(card.paramsJson)
+    private suspend fun regenerateOnce(
+        card: CardEntity,
+        token: String,
+        asVariant: Boolean,
+        override: NodeParams? = null,
+    ): Boolean {
+        // 角色节点/成片节点不是「生成」节点，不能按参数重跑
+        if (isCharacterNode(card) || card.runId == "film") return false
+        val p = override ?: NodeParams.fromJson(card.paramsJson)
             ?: return false
         if (p.prompt.isBlank() && p.characterFolderId == null) return false
         // 上游若连了角色节点，重跑时保持身份锚点参考
@@ -1200,12 +1355,17 @@ class ChatViewModel @Inject constructor(
     /** 重新生成一个节点（可复现）：默认产出为变体，保留原节点可对比 */
     fun regenerateNode(card: CardEntity, asVariant: Boolean = true) {
         val t = token ?: return
+        if (isCharacterNode(card) || card.runId == "film") {
+            toast("该节点不是生成节点，不能按参数重跑")
+            return
+        }
         if (NodeParams.fromJson(card.paramsJson) == null) {
             toast("该节点没有留存生成参数（旧数据），请用底部入口重新创作")
             return
         }
         nodeMenuCard = null
         viewModelScope.launch {
+            val before = captureCanvasState()
             try {
                 val ok = regenerateOnce(card, t, asVariant)
                 if (!ok) toast("没有可复现的参数或未产出结果")
@@ -1214,6 +1374,7 @@ class ChatViewModel @Inject constructor(
             } catch (e: Exception) {
                 lastError = e.message ?: "重新生成失败"
             }
+            pushUndo(before, captureCanvasState())
             markStateChanged()
         }
     }
@@ -1222,6 +1383,7 @@ class ChatViewModel @Inject constructor(
     fun duplicateNodeAsVariant(card: CardEntity) {
         nodeMenuCard = null
         viewModelScope.launch {
+            val before = captureCanvasState()
             runCatching {
                 val (x, y) = nextCanvasPosition()
                 val seq = db.cardDao().maxSequence(conversationId) + 1
@@ -1246,6 +1408,7 @@ class ChatViewModel @Inject constructor(
                 )
                 toast("已复制为变体，可改参数后重跑")
             }.onFailure { e -> lastError = e.message ?: "复制变体失败" }
+            pushUndo(before, captureCanvasState())
             markStateChanged()
         }
     }
@@ -1255,6 +1418,7 @@ class ChatViewModel @Inject constructor(
         val t = token ?: return
         nodeMenuCard = null
         viewModelScope.launch {
+            val before = captureCanvasState()
             try {
                 val visited = linkedSetOf<String>()
                 val queue = ArrayDeque<String>()
@@ -1264,7 +1428,9 @@ class ChatViewModel @Inject constructor(
                     val id = queue.removeFirst()
                     if (!visited.add(id)) continue
                     val c = db.cardDao().byId(id) ?: continue
-                    if (NodeParams.fromJson(c.paramsJson)?.prompt?.isNotBlank() == true) order += c
+                    if (c.runId != "film" && !isCharacterNode(c) &&
+                        NodeParams.fromJson(c.paramsJson)?.prompt?.isNotBlank() == true
+                    ) order += c
                     db.cardLinkDao().outgoing(id).forEach { queue.addLast(it.toCardId) }
                 }
                 if (order.isEmpty()) {
@@ -1278,6 +1444,7 @@ class ChatViewModel @Inject constructor(
             } catch (e: Exception) {
                 lastError = e.message ?: "重跑下游失败"
             }
+            pushUndo(before, captureCanvasState())
             markStateChanged()
         }
     }
@@ -1297,6 +1464,7 @@ class ChatViewModel @Inject constructor(
     /** 把某素材文件夹放为画布「角色节点」，生成时可作为身份锚点参考 */
     fun createCharacterNode(folder: AssetFolderEntity) {
         viewModelScope.launch {
+            val before = captureCanvasState()
             runCatching {
                 val (x, y) = nextCanvasPosition()
                 val seq = db.cardDao().maxSequence(conversationId) + 1
@@ -1322,6 +1490,7 @@ class ChatViewModel @Inject constructor(
                 )
                 toast("已放置角色节点「${folder.name}」")
             }.onFailure { e -> lastError = e.message ?: "创建角色节点失败" }
+            pushUndo(before, captureCanvasState())
             markStateChanged()
         }
     }
@@ -1367,6 +1536,7 @@ class ChatViewModel @Inject constructor(
     /** 回滚到某快照：恢复节点坐标/参数，并按快照重建关系边 */
     fun restoreSnapshot(snapshot: CanvasSnapshotEntity) {
         viewModelScope.launch {
+            val undoBefore = captureCanvasState()
             try {
                 val payload = CanvasSnapshotPayload.fromJson(snapshot.payloadJson) ?: return@launch
                 val existing = db.cardDao().listByConversation(conversationId).associateBy { it.id }
@@ -1391,6 +1561,7 @@ class ChatViewModel @Inject constructor(
             } catch (e: Exception) {
                 lastError = e.message ?: "回滚快照失败"
             }
+            pushUndo(undoBefore, captureCanvasState())
             markStateChanged()
         }
     }
@@ -1410,6 +1581,7 @@ class ChatViewModel @Inject constructor(
         }
         filmBusy = true
         viewModelScope.launch {
+            val before = captureCanvasState()
             try {
                 val out = File(media.mediaRoot(), "film_${System.currentTimeMillis()}.mp4")
                 val ok = withContext(Dispatchers.IO) { Mp4Concatenator.concat(inputs, out) }
@@ -1458,6 +1630,7 @@ class ChatViewModel @Inject constructor(
             } finally {
                 filmBusy = false
             }
+            pushUndo(before, captureCanvasState())
             markStateChanged()
         }
     }
@@ -1473,16 +1646,19 @@ class ChatViewModel @Inject constructor(
             markStateChanged()
         }
         viewModelScope.launch {
+            val before = captureCanvasState()
             runCatching {
                 db.cardLinkDao().deleteForCard(card.id)
                 db.cardDao().softDelete(card.id)
             }.onFailure { e -> lastError = e.message ?: "删除卡片失败" }
+            pushUndo(before, captureCanvasState())
         }
     }
 
     /** 在工作界面建立卡片间参考关系（from → to，role=reference；缺省避免重复） */
     fun linkReference(fromCardId: String, toCardId: String) {
         viewModelScope.launch {
+            val before = captureCanvasState()
             runCatching {
                 val from = db.cardDao().byId(fromCardId) ?: return@launch
                 val to = db.cardDao().byId(toCardId) ?: return@launch
@@ -1502,15 +1678,18 @@ class ChatViewModel @Inject constructor(
                     )
                 }
             }.onFailure { e -> lastError = e.message ?: "建立关系失败" }
+            pushUndo(before, captureCanvasState())
         }
     }
 
     /** 在工作界面移除卡片间参考关系 */
     fun unlinkReference(fromCardId: String, toCardId: String) {
         viewModelScope.launch {
+            val before = captureCanvasState()
             runCatching {
                 db.cardLinkDao().delete(fromCardId, toCardId, "reference")
             }.onFailure { e -> lastError = e.message ?: "移除关系失败" }
+            pushUndo(before, captureCanvasState())
         }
     }
 

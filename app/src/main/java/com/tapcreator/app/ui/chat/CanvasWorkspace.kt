@@ -9,6 +9,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -16,7 +18,10 @@ import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -110,9 +115,15 @@ fun CanvasWorkspace(
     onOpenDraft: (cardId: String, kind: MediaKind) -> Unit,
     onOpenPreview: (CardEntity) -> Unit,
     onOpenNodeMenu: (CardEntity) -> Unit,
+    onRunNode: (CardEntity) -> Unit,
     onConnect: (fromId: String, toId: String) -> Unit,
     onDoubleTapEmpty: () -> Unit,
     onOpenCanvasMenu: () -> Unit,
+    onRerunSelected: () -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    canUndo: Boolean,
+    canRedo: Boolean,
     canConnect: (from: CardEntity, to: CardEntity) -> Boolean,
     isCharacterNode: (CardEntity) -> Boolean,
     onCommitPositions: (updates: List<Pair<String, Pair<Float, Float>>>) -> Unit,
@@ -343,6 +354,11 @@ fun CanvasWorkspace(
                     }
                 },
                 onMenu = { onOpenNodeMenu(card) },
+                onRun = if (!isDraft && card.runId != "film" && !isCharacterNode(card) &&
+                    NodeParams.fromJson(card.paramsJson)?.prompt?.isNotBlank() == true
+                ) {
+                    { onRunNode(card) }
+                } else null,
                 onDoubleTap = {
                     val p = basePos(card)
                     val sz = sizeOf(card.id)
@@ -423,10 +439,15 @@ fun CanvasWorkspace(
 
         CanvasToolbar(
             filterKind = filterKind,
-            showDelete = selectedIds.isNotEmpty(),
+            hasSelection = selectedIds.isNotEmpty(),
             selectMode = selectMode,
+            canUndo = canUndo,
+            canRedo = canRedo,
             onToggleFilter = onToggleFilter,
             onAutoLayout = onAutoLayout,
+            onUndo = onUndo,
+            onRedo = onRedo,
+            onRerunSelected = onRerunSelected,
             onDelete = {
                 onDeleteSelected()
                 multiSelect = false
@@ -631,10 +652,15 @@ private fun ZoomButton(text: String, onClick: () -> Unit) {
 @Composable
 private fun CanvasToolbar(
     filterKind: MediaKind?,
-    showDelete: Boolean,
+    hasSelection: Boolean,
     selectMode: Boolean,
+    canUndo: Boolean,
+    canRedo: Boolean,
     onToggleFilter: (MediaKind?) -> Unit,
     onAutoLayout: () -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onRerunSelected: () -> Unit,
     onDelete: () -> Unit,
     onToggleSelectMode: () -> Unit,
     onOpenCanvasMenu: () -> Unit,
@@ -647,6 +673,7 @@ private fun CanvasToolbar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 8.dp, vertical = 6.dp)
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -670,7 +697,24 @@ private fun CanvasToolbar(
             onClick = onToggleSelectMode,
         )
         TooltipText(onAutoLayout, "整理")
-        if (showDelete) TooltipText(onDelete, "删除选中")
+        ToolbarIcon(
+            icon = Icons.Filled.Undo,
+            desc = "撤销",
+            active = false,
+            enabled = canUndo,
+            onClick = onUndo,
+        )
+        ToolbarIcon(
+            icon = Icons.Filled.Redo,
+            desc = "重做",
+            active = false,
+            enabled = canRedo,
+            onClick = onRedo,
+        )
+        if (hasSelection) {
+            TooltipText(onRerunSelected, "重跑选中")
+            TooltipText(onDelete, "删除选中")
+        }
         ToolbarIcon(
             icon = Icons.Filled.MoreVert,
             desc = "更多",
@@ -686,16 +730,18 @@ private fun ToolbarIcon(
     desc: String,
     active: Boolean,
     onClick: () -> Unit,
+    enabled: Boolean = true,
 ) {
     Surface(
-        onClick = onClick,
+        onClick = { if (enabled) onClick() },
         shape = CircleShape,
         color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Icon(
             imageVector = icon,
             contentDescription = desc,
-            tint = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = (if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
+                .copy(alpha = if (enabled) 1f else 0.35f),
             modifier = Modifier.padding(6.dp).size(18.dp),
         )
     }
@@ -733,6 +779,7 @@ private fun CanvasNode(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onMenu: () -> Unit,
+    onRun: (() -> Unit)?,
     onDoubleTap: () -> Unit,
     onMoveStart: () -> Unit,
     onMove: (Offset) -> Unit,
@@ -788,22 +835,41 @@ private fun CanvasNode(
                     isCharacter = isCharacter,
                     modifier = enterAnimation(delayMs = enterDelayMs),
                 )
-                // 节点菜单入口
-                Surface(
-                    onClick = onMenu,
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                // 节点操作入口：运行 + 更多
+                Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(4.dp)
-                        .size(22.dp),
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.MoreVert,
-                        contentDescription = "节点操作",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(2.dp),
-                    )
+                    if (onRun != null) {
+                        Surface(
+                            onClick = onRun,
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
+                            modifier = Modifier.size(22.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.PlayArrow,
+                                contentDescription = "运行",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(2.dp),
+                            )
+                        }
+                    }
+                    Surface(
+                        onClick = onMenu,
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                        modifier = Modifier.size(22.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "节点操作",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(2.dp),
+                        )
+                    }
                 }
             }
         }

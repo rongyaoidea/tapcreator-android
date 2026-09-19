@@ -294,6 +294,10 @@ interface CardDao {
     @Query("SELECT * FROM cards WHERE conversationId = :conversationId AND deleted = 0 ORDER BY sequence ASC")
     suspend fun listByConversation(conversationId: String): List<CardEntity>
 
+    /** 含已隐藏卡的全部行：撤销/重做恢复现场用（含 deleted=1 的行） */
+    @Query("SELECT * FROM cards WHERE conversationId = :conversationId ORDER BY sequence ASC")
+    suspend fun listAllByConversation(conversationId: String): List<CardEntity>
+
     /** 分页：画布卡片按 sequence 翻页，大画布避免一次加载上千卡 */
     @Query("SELECT * FROM cards WHERE conversationId = :conversationId AND deleted = 0 ORDER BY sequence ASC LIMIT :limit OFFSET :offset")
     suspend fun pageByConversation(conversationId: String, limit: Int, offset: Int): List<CardEntity>
@@ -381,6 +385,10 @@ interface CardLinkDao {
     /** 删除某会话下所有卡片的关系边（清理孤儿引用） */
     @Query("DELETE FROM card_links WHERE fromCardId IN (SELECT id FROM cards WHERE conversationId = :conversationId) OR toCardId IN (SELECT id FROM cards WHERE conversationId = :conversationId)")
     suspend fun deleteByConversation(conversationId: String)
+
+    /** 某会话的全部关系边（撤销/重做快照用） */
+    @Query("SELECT * FROM card_links WHERE fromCardId IN (SELECT id FROM cards WHERE conversationId = :conversationId) OR toCardId IN (SELECT id FROM cards WHERE conversationId = :conversationId)")
+    suspend fun listByConversation(conversationId: String): List<CardLinkEntity>
 }
 
 @Dao
