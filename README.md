@@ -41,6 +41,8 @@ Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 A
 
 ### 版本
 
+**v1.5.0** — 对齐主流无限画布工作台交互：节点参数检查器（改提示词/换模型/调比例后原地重跑）、节点面板（文本/音频/上传/角色）、画布内可收起 Agent 面板、批量重跑选中、撤销/重做、节点运行按钮
+
 **v1.4.0** — 画布升级为节点式工作台：节点留存生成参数，支持单节点重跑/复制为变体/版本标记；新增画布快照与回滚、端口拖拽连线、DAG 分层自动布局、小地图/对齐吸附/框选、角色节点与画布合成成片；Room 迁移至 v17
 
 **v1.3.0** — 移除 Alpine/PRoot 沙箱（搜索/抓取与视频拼接改为 Android 原生）；MCP 市场改为可直接使用的 HTTP 远程服务器并新增 `mcp_market` 工具；提示词输入框可唤出 Agent 调用设计 Skill 扩写提示词；补充多项 Material 3 动效
@@ -87,6 +89,8 @@ Tapcreator is an Android autonomous AI creation app. It features a built-in auto
 | Build | Gradle KTS + AGP 8.5.2 |
 
 ### Version
+
+**v1.5.0** — Aligned with mainstream infinite-canvas workbench UX: node inspector (edit prompt / switch model / adjust ratio and rerun in place), node palette (text / audio / upload / character), collapsible in-canvas Agent panel, batch rerun of selection, undo/redo, and per-node run button
 
 **v1.4.0** — Canvas upgraded to a node-based workbench: nodes persist generation params for single-node rerun / copy-as-variant / version badges; added canvas snapshots & rollback, drag-to-connect ports, DAG layered auto-layout, minimap / alignment snap / rubber-band select, character nodes, and canvas-to-film composition; Room migrated to v17
 

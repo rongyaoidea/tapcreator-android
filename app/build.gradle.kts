@@ -21,8 +21,8 @@ android {
         // 7.x 设备 2026 年占比 <2%，不再值得用版本分支+desugar 维护。
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4.0"
+        versionCode = 6
+        versionName = "1.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
