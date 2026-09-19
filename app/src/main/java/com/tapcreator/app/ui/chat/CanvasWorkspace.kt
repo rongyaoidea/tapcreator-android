@@ -13,6 +13,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.foundation.layout.Arrangement
@@ -43,7 +46,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.TransformOrigin
@@ -62,6 +67,7 @@ import coil.compose.AsyncImage
 import com.tapcreator.app.data.db.CardEntity
 import com.tapcreator.app.data.db.CardLinkEntity
 import com.tapcreator.app.data.model.MediaKind
+import com.tapcreator.app.data.model.NodeParams
 import com.tapcreator.app.data.model.RunStatus
 import com.tapcreator.app.ui.theme.kindColor
 import com.tapcreator.app.ui.theme.kindColorStatic
@@ -69,20 +75,27 @@ import com.tapcreator.app.ui.theme.kindIcon
 import com.tapcreator.app.ui.theme.pressSpring
 import com.tapcreator.app.ui.theme.enterAnimation
 import java.io.File
+import kotlin.math.max
+import kotlin.math.min
 
 /** 画布节点窗宽（dp） */
 private val NODE_W = 160.dp
+
+/** 节点估算高度（dp）：用于小地图与视口剔除 */
+private const val NODE_H_GUESS = 150f
 private const val MIN_SCALE = 0.3f
 private const val MAX_SCALE = 4f
 
 /**
- * 真正可缩放平移的创作画布。
- *  - 平移/缩放：空白单指拖动平移、双指捏合缩放（节点布局基于 card.x/y 持久坐标）
- *  - 单击空白：清除选择/退出多选
- *  - 单击空白卡（runId='draft'）：回调 onOpenDraft 打开提交面板填写内容
- *  - 单击/长按结果卡：进入/追加多选（长按进入多选），选中后点「删除」批量清掉，线自动随选择保留
- *  - 参考连线：在提交面板里选参考卡时自动写入 CardLinkEntity，画布据此自动画线
+ * 可缩放平移的创作画布（节点式工作台）：
+ *  - 平移/缩放：空白拖动平移、双指捏合缩放（节点布局基于 card.x/y 持久坐标）
+ *  - 连线：从节点右侧输出端口拖到另一节点，按类型矩阵校验后写入 CardLinkEntity
+ *  - 节点菜单：节点右上角「⋯」打开（重跑/变体/参数/删除等）
+ *  - 框选：工具栏切换「框选」后在空白拖拽橡皮筋批量选中
+ *  - 对齐：拖动时与其它节点对齐吸附并显示参考线
  *  - 过滤：filterKind 只显示该类型节点（按生成类型着色 kindColor）
+ *  - 小地图：左下角缩略图 + 视口框
+ *  - 视口剔除：仅组合可见范围内的节点，支撑大画布性能
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -95,8 +108,13 @@ fun CanvasWorkspace(
     onClearSelection: () -> Unit,
     onDoubleTapNode: (id: String) -> Unit,
     onOpenDraft: (cardId: String, kind: MediaKind) -> Unit,
-    // 非 draft 成品卡单击：打开全屏预览（图片放大/视频播放+下载），与选中/多选分离
     onOpenPreview: (CardEntity) -> Unit,
+    onOpenNodeMenu: (CardEntity) -> Unit,
+    onConnect: (fromId: String, toId: String) -> Unit,
+    onDoubleTapEmpty: () -> Unit,
+    onOpenCanvasMenu: () -> Unit,
+    canConnect: (from: CardEntity, to: CardEntity) -> Boolean,
+    isCharacterNode: (CardEntity) -> Boolean,
     onCommitPositions: (updates: List<Pair<String, Pair<Float, Float>>>) -> Unit,
     onToggleFilter: (MediaKind?) -> Unit,
     onAutoLayout: () -> Unit,
@@ -105,20 +123,23 @@ fun CanvasWorkspace(
 ) {
     val density = LocalDensity.current
     val nodeW = with(density) { NODE_W.toPx() }
-    // 主题模式：供 Canvas drawScope 内 kindColorStatic 使用（drawScope 不能调 @Composable）
-    // 从 colorScheme.background 亮度推断，与用户手动设置的主题偏好一致
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    // 画布视口尺寸（px，非缩放坐标系）
+    // 供 Canvas drawScope 使用的颜色（drawScope 内不能调 @Composable）
+    val tertiaryColor = MaterialTheme.colorScheme.tertiary
+    val primaryColor = MaterialTheme.colorScheme.primary
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     var scale by remember { mutableStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
-    // 拖动中的实时偏移（画布坐标 dp）：card.x + drags[id].x
-    // 用 SnapshotStateMap 细粒度更新：拖拽单卡只重组该卡，而非 copy 整个 Map 重组全画布
     val drags = remember { androidx.compose.runtime.mutableStateMapOf<String, Offset>() }
-    // 节点实测布局尺寸（px）
+    val snapOver = remember { androidx.compose.runtime.mutableStateMapOf<String, Offset>() }
     val nodeSizes = remember { androidx.compose.runtime.mutableStateMapOf<String, IntSize>() }
-    // 多选删除状态：长按任意结果卡进入，进入后点其它卡追加/取消多选，点「删除」统一删除
     var multiSelect by remember { mutableStateOf(false) }
+    var selectMode by remember { mutableStateOf(false) }
+    var rectStart by remember { mutableStateOf<Offset?>(null) }
+    var rectEnd by remember { mutableStateOf<Offset?>(null) }
+    var connectFrom by remember { mutableStateOf<String?>(null) }
+    var connectPoint by remember { mutableStateOf<Offset?>(null) }
+    var guides by remember { mutableStateOf<Pair<Float?, Float?>?>(null) }
 
     fun basePos(card: CardEntity): Offset = Offset(card.x * density.density, card.y * density.density)
 
@@ -138,23 +159,59 @@ fun CanvasWorkspace(
     fun containerOf(screen: Offset): Offset =
         Offset((screen.x - pan.x) / scale, (screen.y - pan.y) / scale)
 
+    fun measureSizeOf(id: String): IntSize = sizeOf(id)
+
+    val gestureModifier: Modifier = if (selectMode) {
+        Modifier.pointerInput(cards, selectMode) {
+            detectDragGestures(
+                onDragStart = { rectStart = it; rectEnd = it },
+                onDragEnd = {
+                    val a = rectStart
+                    val b = rectEnd
+                    if (a != null && b != null) {
+                        val c1 = containerOf(a)
+                        val c2 = containerOf(b)
+                        val rect = CanvasLayout.Rect(
+                            min(c1.x, c2.x), min(c1.y, c2.y),
+                            max(c1.x, c2.x), max(c1.y, c2.y),
+                        )
+                        val nodeRects = cards
+                            .filter { filterKind == null || it.kind == filterKind }
+                            .map { c ->
+                                val p = basePos(c)
+                                val s = measureSizeOf(c.id)
+                                c.id to CanvasLayout.Rect(p.x, p.y, p.x + s.width.toFloat(), p.y + s.height.toFloat())
+                            }
+                        CanvasLayout.hitTest(rect, nodeRects).forEach { onToggleNode(it, true) }
+                    }
+                    rectStart = null
+                    rectEnd = null
+                },
+                onDragCancel = { rectStart = null; rectEnd = null },
+            ) { change, _ ->
+                rectEnd = change.position
+                change.consume()
+            }
+        }
+    } else {
+        Modifier.pointerInput(cards) {
+            detectTransformGestures { centroid, panChange, zoomChange, _ ->
+                val newScale = (scale * zoomChange).coerceIn(MIN_SCALE, MAX_SCALE)
+                val k = newScale / scale
+                pan = Offset(
+                    (pan.x - centroid.x) * k + centroid.x + panChange.x,
+                    (pan.y - centroid.y) * k + centroid.y + panChange.y,
+                )
+                scale = newScale
+            }
+        }
+    }
+
     Box(
         modifier = modifier
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f))
             .onSizeChanged { viewport = it }
-            // 平移 + 缩放
-            .pointerInput(cards) {
-                detectTransformGestures { centroid, panChange, zoomChange, _ ->
-                    val newScale = (scale * zoomChange).coerceIn(MIN_SCALE, MAX_SCALE)
-                    val k = newScale / scale
-                    pan = Offset(
-                        (pan.x - centroid.x) * k + centroid.x + panChange.x,
-                        (pan.y - centroid.y) * k + centroid.y + panChange.y,
-                    )
-                    scale = newScale
-                }
-            }
-            // 单击空白清除选择 / 退出多选（双击空白不再新建卡，类型由底部按钮明确选择）
+            .then(gestureModifier)
             .pointerInput(cards) {
                 detectTapGestures(
                     onTap = { pos ->
@@ -164,10 +221,14 @@ fun CanvasWorkspace(
                             onClearSelection()
                         }
                     },
+                    onDoubleTap = { pos ->
+                        val hit = hitNode(containerOf(pos))
+                        if (hit == null && !selectMode) onDoubleTapEmpty()
+                    },
                 )
             },
     ) {
-        // 关系边：选自卡参考后自动出现
+        // 关系边 + 连线预览 + 对齐参考线
         Canvas(modifier = Modifier.fillMaxSize()) {
             for (link in links) {
                 val from = cards.firstOrNull { it.id == link.fromCardId } ?: continue
@@ -183,58 +244,112 @@ fun CanvasWorkspace(
                     quadraticTo(mid.x, a.y, mid.x, mid.y)
                     quadraticTo(mid.x, b.y, b.x, b.y)
                 }
-                drawPath(
-                    path = path,
-                    color = kindColorStatic(from.kind, dark).copy(alpha = 0.55f),
-                    style = Stroke(width = 2f),
+                val color = if (link.role == "parent") {
+                    tertiaryColor
+                } else {
+                    kindColorStatic(from.kind, dark)
+                }
+                drawPath(path = path, color = color.copy(alpha = 0.55f), style = Stroke(width = 2f))
+            }
+            // 拖拽连线预览
+            val cf = connectFrom
+            val cp = connectPoint
+            if (cf != null && cp != null) {
+                val card = cards.firstOrNull { it.id == cf }
+                if (card != null) {
+                    val s = sizeOf(card.id)
+                    val a = screenPos(basePos(card)) + Offset(s.width.toFloat(), s.height / 2f) * scale
+                    val b = screenPos(cp)
+                    drawLine(
+                        color = primaryColor.copy(alpha = 0.8f),
+                        start = a,
+                        end = b,
+                        strokeWidth = 2f,
+                    )
+                }
+            }
+            // 对齐参考线
+            guides?.let { (gx, gy) ->
+                gx?.let {
+                    val x = screenPos(Offset(it, 0f)).x
+                    drawLine(Color(0xFF64B5F6), Offset(x, 0f), Offset(x, size.height), strokeWidth = 1.5f)
+                }
+                gy?.let {
+                    val y = screenPos(Offset(0f, it)).y
+                    drawLine(Color(0xFF64B5F6), Offset(0f, y), Offset(size.width, y), strokeWidth = 1.5f)
+                }
+            }
+            // 橡皮筋选择框
+            val a = rectStart
+            val b = rectEnd
+            if (selectMode && a != null && b != null) {
+                val left = min(a.x, b.x)
+                val top = min(a.y, b.y)
+                drawRect(
+                    color = Color(0x3364B5F6),
+                    topLeft = Offset(left, top),
+                    size = Size(kotlin.math.abs(b.x - a.x), kotlin.math.abs(b.y - a.y)),
+                )
+                drawRect(
+                    color = Color(0xFF64B5F6),
+                    topLeft = Offset(left, top),
+                    size = Size(kotlin.math.abs(b.x - a.x), kotlin.math.abs(b.y - a.y)),
+                    style = Stroke(width = 1.5f),
                 )
             }
         }
 
-        // 节点
+        // 节点（视口剔除：只组合可见范围）
         for ((idx, card) in cards.withIndex()) {
             if (filterKind != null && card.kind != filterKind) continue
             val drag = drags[card.id] ?: Offset.Zero
+            val base = snapOver[card.id] ?: (basePos(card) + drag * density.density)
             val selected = card.id in selectedIds
             val isDraft = card.runId == "draft"
-            // 生成失败后空白卡 runId 仍是 "draft"：允许长按进入多选删除，避免「失败卡无法手动删除」
             val failedBlank = isDraft && card.status == RunStatus.FAILED
+            val s = sizeOf(card.id)
+            val sp = screenPos(base)
+            val margin = 240f
+            val visible = sp.x > -margin - s.width * scale &&
+                sp.x < viewport.width.toFloat() + margin &&
+                sp.y > -margin - s.height * scale &&
+                sp.y < viewport.height.toFloat() + margin
+            if (!visible) continue
             CanvasNode(
                 card = card,
                 selected = selected,
                 isDraft = isDraft,
+                isCharacter = isCharacterNode(card),
+                connectOrigin = connectFrom,
                 enterDelayMs = idx * 50,
-                basePx = basePos(card) + drag * density.density,
+                basePx = base,
                 scale = scale,
                 pan = pan,
-                onSize = { s -> nodeSizes[card.id] = s },
+                onSize = { sz -> nodeSizes[card.id] = sz },
                 onClick = {
                     if (isDraft) {
-                        // 点空白卡=打开提交面板；从此进入单卡编辑，退出多选
                         multiSelect = false
                         onOpenDraft(card.id, card.kind)
                     } else if (multiSelect) {
-                        // 多选模式下点成品卡：追加/取消选中
                         onToggleNode(card.id, true)
                     } else {
-                        // 单击成品卡：打开全屏预览（图片放大/视频播放+下载）
                         onOpenPreview(card)
                     }
                 },
                 onLongClick = {
                     if (!isDraft || failedBlank) {
-                        // 长按进入多选删除状态，并把该卡纳入选中（失败空白卡也允许删除）
                         multiSelect = true
                         onToggleNode(card.id, true)
                     }
                 },
+                onMenu = { onOpenNodeMenu(card) },
                 onDoubleTap = {
                     val p = basePos(card)
-                    val s = sizeOf(card.id)
+                    val sz = sizeOf(card.id)
                     scale = 1.5f
                     pan = Offset(
-                        viewport.width / 2f - (p.x + s.width / 2f) * scale,
-                        viewport.height / 2f - (p.y + s.height / 2f) * scale,
+                        viewport.width / 2f - (p.x + sz.width / 2f) * scale,
+                        viewport.height / 2f - (p.y + sz.height / 2f) * scale,
                     )
                     if (isDraft) {
                         multiSelect = false
@@ -246,37 +361,101 @@ fun CanvasWorkspace(
                 },
                 onMoveStart = { drags[card.id] = Offset.Zero },
                 onMove = { deltaPx ->
-                    val deltaDp = Offset(
-                        deltaPx.x / (scale * density.density),
-                        deltaPx.y / (scale * density.density),
-                    )
+                    val deltaDp = Offset(deltaPx.x / (scale * density.density), deltaPx.y / (scale * density.density))
                     val grp = if (selected) selectedIds else setOf(card.id)
                     grp.forEach { id -> drags[id] = (drags[id] ?: Offset.Zero) + deltaDp }
+                    // 单节点拖动：与其它节点对齐吸附（阈值 8dp），显示参考线
+                    if (grp.size == 1) {
+                        val cur = basePos(card) + (drags[card.id] ?: Offset.Zero) * density.density
+                        val others = cards
+                            .filter { it.id != card.id && (filterKind == null || it.kind == filterKind) }
+                            .map { Triple(it.id, it.x * density.density, it.y * density.density) }
+                        val snap = CanvasLayout.snap(cur.x, cur.y, card.id, others, threshold = 8f * density.density)
+                        snapOver[card.id] = Offset(snap.x, snap.y)
+                        guides = snap.guideX to snap.guideY
+                    }
                 },
                 onMoveEnd = {
                     val grp = if (selected) selectedIds else setOf(card.id)
                     val updates = grp.mapNotNull { id ->
                         val c = cards.firstOrNull { it.id == id } ?: return@mapNotNull null
-                        val d = drags[id] ?: return@mapNotNull null
-                        id to (c.x + d.x to c.y + d.y)
+                        val over = snapOver[id]
+                        if (over != null) {
+                            id to ((over.x / density.density) to (over.y / density.density))
+                        } else {
+                            val d = drags[id] ?: return@mapNotNull null
+                            id to ((c.x + d.x) to (c.y + d.y))
+                        }
                     }
                     onCommitPositions(updates)
                     grp.forEach { drags.remove(it) }
+                    snapOver.clear()
+                    guides = null
                 },
             )
         }
 
-        // 工具栏（不随画布缩放）
+        // 连线端口拖拽：由节点端口回调驱动
+        CanvasPortLayer(
+            cards = cards,
+            connectFrom = connectFrom,
+            scale = scale,
+            pan = pan,
+            basePos = { c -> basePos(c) },
+            sizeOf = { id -> sizeOf(id) },
+            viewport = viewport,
+            onConnectStart = { id -> connectFrom = id },
+            onConnectMove = { pt -> connectPoint = pt },
+            onConnectDrop = { from, endContainer ->
+                val target = hitNode(endContainer)
+                if (target != null && target != from) {
+                    val fromCard = cards.firstOrNull { it.id == from }
+                    val toCard = cards.firstOrNull { it.id == target }
+                    if (fromCard != null && toCard != null && canConnect(fromCard, toCard)) {
+                        onConnect(from, target)
+                    }
+                }
+                connectFrom = null
+                connectPoint = null
+            },
+            onConnectCancel = { connectFrom = null; connectPoint = null },
+        )
+
         CanvasToolbar(
             filterKind = filterKind,
             showDelete = selectedIds.isNotEmpty(),
+            selectMode = selectMode,
             onToggleFilter = onToggleFilter,
             onAutoLayout = onAutoLayout,
             onDelete = {
                 onDeleteSelected()
                 multiSelect = false
             },
+            onToggleSelectMode = {
+                selectMode = !selectMode
+                if (!selectMode) {
+                    rectStart = null
+                    rectEnd = null
+                }
+            },
+            onOpenCanvasMenu = onOpenCanvasMenu,
         )
+
+        // 小地图
+        if (cards.size >= 4) {
+            CanvasMinimap(
+                cards = cards,
+                filterKind = filterKind,
+                scale = scale,
+                pan = pan,
+                densityPx = density.density,
+                viewport = viewport,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(12.dp)
+                    .size(120.dp, 84.dp),
+            )
+        }
 
         // 缩放控制
         Row(
@@ -291,6 +470,125 @@ fun CanvasWorkspace(
                 scale = 1f
                 pan = Offset.Zero
             }
+        }
+    }
+}
+
+/**
+ * 端口拖拽层：在可见节点左右两侧渲染输入/输出端口。
+ * 端口上的拖拽只负责连线，不移动节点（消费事件，避免冒泡到节点拖动）。
+ */
+@Composable
+private fun CanvasPortLayer(
+    cards: List<CardEntity>,
+    connectFrom: String?,
+    scale: Float,
+    pan: Offset,
+    basePos: (CardEntity) -> Offset,
+    sizeOf: (String) -> IntSize,
+    viewport: IntSize,
+    onConnectStart: (String) -> Unit,
+    onConnectMove: (Offset) -> Unit,
+    onConnectDrop: (String, Offset) -> Unit,
+    onConnectCancel: () -> Unit,
+) {
+    for (card in cards) {
+        val s = sizeOf(card.id)
+        val base = basePos(card)
+        val screen = Offset(base.x * scale + pan.x, base.y * scale + pan.y)
+        // 视口剔除：屏幕外节点不渲染端口
+        if (screen.x < -240f - s.width * scale || screen.x > viewport.width + 240f ||
+            screen.y < -240f || screen.y > viewport.height + 240f
+        ) continue
+        // 输出端口在「屏幕」上的中心点
+        val portCenter = Offset(screen.x + s.width * scale, screen.y + s.height * scale / 2f)
+        Box(
+            modifier = Modifier
+                .offset { IntOffset((portCenter.x - 24f).toInt(), (portCenter.y - 24f).toInt()) }
+                .size(48.dp)
+                .pointerInput(card.id, scale, pan.x, pan.y, s, base) {
+                    var acc = Offset.Zero
+                    detectDragGestures(
+                        onDragStart = {
+                            acc = Offset.Zero
+                            onConnectStart(card.id)
+                            onConnectMove(Offset((portCenter.x - pan.x) / scale, (portCenter.y - pan.y) / scale))
+                        },
+                        onDragEnd = {
+                            val scr = portCenter + acc
+                            onConnectDrop(card.id, Offset((scr.x - pan.x) / scale, (scr.y - pan.y) / scale))
+                        },
+                        onDragCancel = { onConnectCancel() },
+                    ) { change, amount ->
+                        acc += amount
+                        val scr = portCenter + acc
+                        onConnectMove(Offset((scr.x - pan.x) / scale, (scr.y - pan.y) / scale))
+                        change.consume()
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(14.dp)
+                    .background(
+                        if (connectFrom == card.id) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+                        CircleShape,
+                    )
+                    .border(1.dp, MaterialTheme.colorScheme.surface, CircleShape),
+            )
+        }
+    }
+}
+
+@Composable
+private fun CanvasMinimap(
+    cards: List<CardEntity>,
+    filterKind: MediaKind?,
+    scale: Float,
+    pan: Offset,
+    densityPx: Float,
+    viewport: IntSize,
+    modifier: Modifier = Modifier,
+) {
+    val shown = cards.filter { filterKind == null || it.kind == filterKind }
+    if (shown.isEmpty()) return
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+        tonalElevation = 2.dp,
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize().padding(6.dp)) {
+            val minX = shown.minOf { it.x } - 40f
+            val maxX = shown.maxOf { it.x } + NODE_W.value + 40f
+            val minY = shown.minOf { it.y } - 40f
+            val maxY = shown.maxOf { it.y } + NODE_H_GUESS + 40f
+            val spanX = (maxX - minX).coerceAtLeast(1f)
+            val spanY = (maxY - minY).coerceAtLeast(1f)
+            val k = min(size.width / spanX, size.height / spanY)
+            fun mx(x: Float): Float = (x - minX) * k
+            fun my(y: Float): Float = (y - minY) * k
+
+            shown.forEach { c ->
+                drawRoundRect(
+                    color = kindColorStatic(c.kind, false).copy(alpha = 0.8f),
+                    topLeft = Offset(mx(c.x), my(c.y)),
+                    size = Size(NODE_W.value * k, NODE_H_GUESS * k),
+                    cornerRadius = CornerRadius(2f),
+                )
+            }
+            // 视口框（容器 dp 坐标）
+            val vx = -pan.x / (scale * densityPx)
+            val vy = -pan.y / (scale * densityPx)
+            val vw = viewport.width / (scale * densityPx)
+            val vh = viewport.height / (scale * densityPx)
+            drawRect(
+                color = Color(0xFF64B5F6),
+                topLeft = Offset(mx(vx), my(vy)),
+                size = Size(vw * k, vh * k),
+                style = Stroke(width = 1.5f),
+            )
         }
     }
 }
@@ -334,9 +632,12 @@ private fun ZoomButton(text: String, onClick: () -> Unit) {
 private fun CanvasToolbar(
     filterKind: MediaKind?,
     showDelete: Boolean,
+    selectMode: Boolean,
     onToggleFilter: (MediaKind?) -> Unit,
     onAutoLayout: () -> Unit,
     onDelete: () -> Unit,
+    onToggleSelectMode: () -> Unit,
+    onOpenCanvasMenu: () -> Unit,
 ) {
     val kinds = listOf<MediaKind?>(null, MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.AUDIO)
     val labels = mapOf<MediaKind?, String>(
@@ -362,8 +663,41 @@ private fun CanvasToolbar(
                 colors = FilterChipDefaults.filterChipColors(),
             )
         }
+        ToolbarIcon(
+            icon = Icons.Filled.CropFree,
+            desc = "框选",
+            active = selectMode,
+            onClick = onToggleSelectMode,
+        )
         TooltipText(onAutoLayout, "整理")
         if (showDelete) TooltipText(onDelete, "删除选中")
+        ToolbarIcon(
+            icon = Icons.Filled.MoreVert,
+            desc = "更多",
+            active = false,
+            onClick = onOpenCanvasMenu,
+        )
+    }
+}
+
+@Composable
+private fun ToolbarIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    desc: String,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = desc,
+            tint = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(6.dp).size(18.dp),
+        )
     }
 }
 
@@ -389,6 +723,8 @@ private fun CanvasNode(
     card: CardEntity,
     selected: Boolean,
     isDraft: Boolean,
+    isCharacter: Boolean,
+    connectOrigin: String?,
     enterDelayMs: Int = 0,
     basePx: Offset,
     scale: Float,
@@ -396,6 +732,7 @@ private fun CanvasNode(
     onSize: (IntSize) -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onMenu: () -> Unit,
     onDoubleTap: () -> Unit,
     onMoveStart: () -> Unit,
     onMove: (Offset) -> Unit,
@@ -403,6 +740,12 @@ private fun CanvasNode(
 ) {
     val screen = Offset(basePx.x * scale + pan.x, basePx.y * scale + pan.y)
     val shape = RoundedCornerShape(12.dp)
+    val borderModifier = when {
+        selected -> Modifier.border(2.dp, kindColor(card.kind), shape)
+        isCharacter -> Modifier.border(2.dp, MaterialTheme.colorScheme.tertiary, shape)
+        isDraft -> Modifier.border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f), shape)
+        else -> Modifier.border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), shape)
+    }
     Box(
         modifier = Modifier
             .offset { IntOffset(screen.x.toInt(), screen.y.toInt()) }
@@ -431,25 +774,58 @@ private fun CanvasNode(
         Surface(
             modifier = Modifier
                 .width(NODE_W)
-                .then(
-                    when {
-                        selected -> Modifier.border(2.dp, kindColor(card.kind), shape)
-                        isDraft -> Modifier.border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f), shape)
-                        else -> Modifier.border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), shape)
-                    }
-                ),
+                .then(borderModifier),
             shape = shape,
             color = if (selected) kindColor(card.kind).copy(alpha = 0.14f) else MaterialTheme.colorScheme.surface,
             tonalElevation = if (selected) 6.dp else 2.dp,
             shadowElevation = if (selected) 6.dp else 2.dp,
         ) {
-            CanvasNodeContent(
-                card = card,
-                selected = selected,
-                isDraft = isDraft,
-                modifier = enterAnimation(delayMs = enterDelayMs),
-            )
+            Box {
+                CanvasNodeContent(
+                    card = card,
+                    selected = selected,
+                    isDraft = isDraft,
+                    isCharacter = isCharacter,
+                    modifier = enterAnimation(delayMs = enterDelayMs),
+                )
+                // 节点菜单入口
+                Surface(
+                    onClick = onMenu,
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(22.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.MoreVert,
+                        contentDescription = "节点操作",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(2.dp),
+                    )
+                }
+            }
         }
+        // 输入端口（左）
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .offset(x = (-5).dp)
+                .size(10.dp)
+                .background(MaterialTheme.colorScheme.outline, CircleShape),
+        )
+        // 输出端口（右）：连线拖拽由 CanvasPortLayer 负责
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .offset(x = 5.dp)
+                .size(10.dp)
+                .background(
+                    if (connectOrigin == card.id) MaterialTheme.colorScheme.tertiary else kindColor(card.kind),
+                    CircleShape,
+                ),
+        )
     }
 }
 
@@ -458,8 +834,10 @@ private fun CanvasNodeContent(
     card: CardEntity,
     selected: Boolean,
     isDraft: Boolean,
+    isCharacter: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val params = NodeParams.fromJson(card.paramsJson)
     Column(modifier = modifier.fillMaxWidth()) {
         // 预览区
         Box(
@@ -472,8 +850,23 @@ private fun CanvasNodeContent(
             val file = card.mediaPath?.let { File(it) }
                 ?: card.previewPath?.let { File(it) }
             when {
+                isCharacter -> Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Person,
+                        contentDescription = "角色",
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(30.dp),
+                    )
+                    Text(
+                        text = "角色锚点",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                    )
+                }
                 isDraft -> {
-                    // 提交后 status 升级为 RUNNING 的「生成中」占位卡：显示加载动画，避免静默消失
                     when (card.status) {
                         RunStatus.RUNNING -> Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -489,7 +882,6 @@ private fun CanvasNodeContent(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            // indeterminate 进度条：增强等待态的"进行中"感知
                             LinearProgressIndicator(
                                 modifier = Modifier
                                     .width(100.dp)
@@ -560,18 +952,19 @@ private fun CanvasNodeContent(
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
-            // 增强提示词角标：非 draft 成品卡且 promptEnhanced 时显示（矢量图标替代 emoji）
+            if (card.variantOf != null) {
+                Text(
+                    text = "v${card.version}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
             if (!isDraft && card.promptEnhanced) {
                 Icon(
                     imageVector = Icons.Filled.AutoAwesome,
                     contentDescription = "增强",
                     tint = MaterialTheme.colorScheme.tertiary,
                     modifier = Modifier.size(14.dp),
-                )
-                Text(
-                    text = "增强",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.tertiary,
                 )
             }
             if (isDraft) {
@@ -585,6 +978,19 @@ private fun CanvasNodeContent(
                     color = if (card.status == RunStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                 )
             }
+        }
+        // 参数摘要角标：模型 / 比例 / 分辨率 / 时长
+        params?.summary()?.takeIf { it.isNotBlank() }?.let { summary ->
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
+            )
         }
     }
 }

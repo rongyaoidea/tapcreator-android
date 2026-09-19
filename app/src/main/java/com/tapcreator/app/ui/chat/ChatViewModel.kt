@@ -13,18 +13,25 @@ import com.tapcreator.app.backend.auth.AuthService
 import com.tapcreator.app.backend.media.MediaStore
 import com.tapcreator.app.backend.model.ModelRouter
 import com.tapcreator.app.backend.service.RunService
+import com.tapcreator.app.backend.video.Mp4Concatenator
 import com.tapcreator.app.data.db.AgentRunEntity
 import com.tapcreator.app.data.db.AppDatabase
 import com.tapcreator.app.data.db.AssetEntity
+import com.tapcreator.app.data.db.AssetFolderEntity
+import com.tapcreator.app.data.db.CanvasSnapshotEntity
 import com.tapcreator.app.data.db.CardEntity
 import com.tapcreator.app.data.db.CardLinkEntity
 import com.tapcreator.app.data.db.ConversationStateEntity
 import com.tapcreator.app.data.db.MessageEntity
 import com.tapcreator.app.data.db.ModelOptionEntity
 import com.tapcreator.app.data.model.MediaKind
+import com.tapcreator.app.data.model.CanvasSnapshotPayload
 import com.tapcreator.app.data.model.GenerationPreferences
+import com.tapcreator.app.data.model.NodeParams
 import com.tapcreator.app.data.model.RunRequest
 import com.tapcreator.app.data.model.RunStatus
+import com.tapcreator.app.data.model.SnapshotLink
+import com.tapcreator.app.data.model.SnapshotNode
 import com.tapcreator.app.data.model.ThinkingLevel
 import com.tapcreator.app.data.prefs.SettingsStore
 import java.io.File
@@ -651,20 +658,21 @@ class ChatViewModel @Inject constructor(
         markStateChanged()
     }
 
-    /** 自动整理：把会话内全部节点按类型网格重排（P2 力导向的轻量替代：稳定、无碰撞的网格铺排） */
+    /** 自动整理：按引用边做 DAG 分层布局（上游在左、下游在右），让工作流一眼可读 */
     fun autoLayoutCanvas() {
         viewModelScope.launch {
-            val nodeIds = runCatching { db.cardDao().listByConversation(conversationId) }.getOrNull().orEmpty()
-                .map { it.id to it.kind }
-            if (nodeIds.isEmpty()) return@launch
-            val updates = mutableListOf<Pair<String, Pair<Float, Float>>>()
-            val col = 4
-            nodeIds.forEachIndexed { i, (id, _) ->
-                val x = (i % col) * 190f + 24f
-                val y = (i / col) * 200f + 24f
-                updates += id to (x to y)
-            }
-            commitNodePositions(updates)
+            val cs = runCatching { db.cardDao().listByConversation(conversationId) }.getOrNull().orEmpty()
+            if (cs.isEmpty()) return@launch
+            val idSet = cs.map { it.id }.toSet()
+            val edges = cs.flatMap { db.cardLinkDao().outgoing(it.id) }
+                .map { it.fromCardId to it.toCardId }
+                .filter { it.first in idSet && it.second in idSet }
+                .distinct()
+            val placements = CanvasLayout.layered(
+                nodes = cs.map { CanvasLayout.Node(it.id, it.kind) },
+                edges = edges,
+            )
+            commitNodePositions(placements.map { it.id to (it.x to it.y) })
         }
     }
 
@@ -677,9 +685,14 @@ class ChatViewModel @Inject constructor(
         // 参考类型过滤：图像生成不接受视频/音频参考；视频生成才接受图像+视频参考。
         // 不适用当前生成类型的参考卡/素材直接剔除并提示，避免「选了却无效」的误导。
         val target = selectedKind
-        val usableCards = selectedReferenceCards.filter { canServeAsReference(it.kind, target) }
+        // 角色节点不作为普通图片卡上送（它没有单张媒体），而是展开为其绑定文件夹的多视角素材
+        val characterIds = selectedReferenceCards.filter { isCharacterNode(it) }.map { it.id }.toSet()
+        val usableCards = selectedReferenceCards
+            .filterNot { it.id in characterIds }
+            .filter { canServeAsReference(it.kind, target) }
         val usableAssets = selectedReferenceAssets.filter { canServeAsReference(it.kind, target) }
-        val dropped = (selectedReferenceCards.size - usableCards.size) + (selectedReferenceAssets.size - usableAssets.size)
+        val dropped = (selectedReferenceCards.count { it.id !in characterIds } - usableCards.size) +
+            (selectedReferenceAssets.size - usableAssets.size)
         if (dropped > 0) {
             toast("已忽略 $dropped 个不适用于${if (target == MediaKind.IMAGE) "图像" else "视频"}生成的参考")
         }
@@ -836,6 +849,14 @@ class ChatViewModel @Inject constructor(
                         }
                     } else merged
                     lastRequestBase = lastRequestBase!!.copy(referencedAssetIds = capped)
+                }
+            }
+            // 角色节点：展开绑定文件夹的多视角素材，作为身份锚点参考并入上送路径
+            if (characterIds.isNotEmpty()) {
+                val charPaths = runCatching { characterPathsFor(characterIds.toList()) }.getOrDefault(emptyList())
+                if (charPaths.isNotEmpty()) {
+                    val paths = (lastRequestBase!!.referencedAssetPaths + charPaths).distinct()
+                    lastRequestBase = lastRequestBase!!.copy(referencedAssetPaths = paths)
                 }
             }
             val r2 = lastRequestBase!!
@@ -1084,6 +1105,363 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    // ================= 节点工程化：可复现 / 变体 / 快照 / 成片 =================
+
+    /** 节点操作菜单当前目标卡（null=关闭） */
+    var nodeMenuCard by mutableStateOf<CardEntity?>(null)
+        private set
+
+    /** 节点参数详情当前目标卡（null=关闭） */
+    var nodeParamsCard by mutableStateOf<CardEntity?>(null)
+        private set
+
+    /** 画布快照列表（最近优先） */
+    val snapshots: StateFlow<List<CanvasSnapshotEntity>> =
+        db.canvasSnapshotDao().observeByConversation(conversationId).stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList(),
+        )
+
+    /** 可选的角色/产品素材文件夹（角色节点来源） */
+    val assetFolders: StateFlow<List<AssetFolderEntity>> =
+        db.assetFolderDao().observeAll().stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList(),
+        )
+
+    /** 成片合成进行中 */
+    var filmBusy by mutableStateOf(false)
+        private set
+
+    fun openNodeMenu(card: CardEntity) {
+        nodeMenuCard = card
+    }
+
+    fun dismissNodeMenu() {
+        nodeMenuCard = null
+    }
+
+    fun openNodeParams(card: CardEntity) {
+        nodeParamsCard = card
+        nodeMenuCard = null
+    }
+
+    fun dismissNodeParams() {
+        nodeParamsCard = null
+    }
+
+    /** 判断一张卡是否为「角色节点」（绑定素材文件夹，作身份锚点参考） */
+    fun isCharacterNode(card: CardEntity): Boolean =
+        NodeParams.fromJson(card.paramsJson)?.characterFolderId != null
+
+    private suspend fun nextCanvasPosition(): Pair<Float, Float> {
+        val count = runCatching { db.cardDao().listByConversation(conversationId) }
+            .getOrNull().orEmpty().size
+        val col = 6
+        return (24f + (count % col) * 170f) to (24f + (count / col) * 170f)
+    }
+
+    /** 内部：用节点留存参数重跑一次，产出标记为变体并建 parent 边。返回是否有产出。 */
+    private suspend fun regenerateOnce(card: CardEntity, token: String, asVariant: Boolean): Boolean {
+        val p = NodeParams.fromJson(card.paramsJson)
+            ?: return false
+        if (p.prompt.isBlank() && p.characterFolderId == null) return false
+        // 上游若连了角色节点，重跑时保持身份锚点参考
+        val characterRefs = db.cardLinkDao().incoming(card.id)
+            .mapNotNull { db.cardDao().byId(it.fromCardId) }
+            .filter { isCharacterNode(it) }
+            .map { it.id }
+        val characterPaths = if (characterRefs.isEmpty()) emptyList() else characterPathsFor(characterRefs)
+        val req = RunRequest(
+            conversationId = conversationId,
+            prompt = p.prompt,
+            kind = card.kind,
+            modelIds = listOfNotNull(p.modelId.ifBlank { selectedModelId ?: return false }),
+            count = 1,
+            ratio = p.ratio,
+            quality = p.quality,
+            resolution = p.resolution,
+            seconds = p.seconds,
+            referencedAssetIds = p.referenceCardIds,
+            referencedAssetPaths = characterPaths,
+        )
+        val run = runService.launch(token, req)
+        val produced = db.cardDao().byRun(run.id)
+        val newParams = p.copy(variantOf = card.id).toJson()
+        produced.forEach { c ->
+            db.cardDao().updateParams(c.id, newParams, (card.version + 1).coerceAtLeast(1), card.id)
+            if (asVariant) {
+                db.cardLinkDao().insert(
+                    CardLinkEntity(id = java.util.UUID.randomUUID().toString(), fromCardId = card.id, toCardId = c.id, role = "parent"),
+                )
+            }
+        }
+        return produced.isNotEmpty()
+    }
+
+    /** 重新生成一个节点（可复现）：默认产出为变体，保留原节点可对比 */
+    fun regenerateNode(card: CardEntity, asVariant: Boolean = true) {
+        val t = token ?: return
+        if (NodeParams.fromJson(card.paramsJson) == null) {
+            toast("该节点没有留存生成参数（旧数据），请用底部入口重新创作")
+            return
+        }
+        nodeMenuCard = null
+        viewModelScope.launch {
+            try {
+                val ok = regenerateOnce(card, t, asVariant)
+                if (!ok) toast("没有可复现的参数或未产出结果")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                lastError = e.message ?: "重新生成失败"
+            }
+            markStateChanged()
+        }
+    }
+
+    /** 复制节点为变体（不重新生成，仅复制参数/媒体引用，坐标错开），供改参后单独重跑 */
+    fun duplicateNodeAsVariant(card: CardEntity) {
+        nodeMenuCard = null
+        viewModelScope.launch {
+            runCatching {
+                val (x, y) = nextCanvasPosition()
+                val seq = db.cardDao().maxSequence(conversationId) + 1
+                val newId = java.util.UUID.randomUUID().toString()
+                val srcParams = NodeParams.fromJson(card.paramsJson) ?: NodeParams()
+                db.cardDao().insert(
+                    card.copy(
+                        id = newId,
+                        runId = "variant",
+                        sequence = seq,
+                        title = "${card.title} · 变体",
+                        x = x,
+                        y = y,
+                        status = RunStatus.COMPLETED,
+                        variantOf = card.id,
+                        version = card.version + 1,
+                        paramsJson = srcParams.copy(variantOf = card.id).toJson(),
+                    ),
+                )
+                db.cardLinkDao().insert(
+                    CardLinkEntity(id = java.util.UUID.randomUUID().toString(), fromCardId = card.id, toCardId = newId, role = "parent"),
+                )
+                toast("已复制为变体，可改参数后重跑")
+            }.onFailure { e -> lastError = e.message ?: "复制变体失败" }
+            markStateChanged()
+        }
+    }
+
+    /** 重跑该节点及其所有下游（引用链），用于「改了上游，只重算受影响的部分」 */
+    fun rerunDownstream(card: CardEntity) {
+        val t = token ?: return
+        nodeMenuCard = null
+        viewModelScope.launch {
+            try {
+                val visited = linkedSetOf<String>()
+                val queue = ArrayDeque<String>()
+                db.cardLinkDao().outgoing(card.id).forEach { queue.addLast(it.toCardId) }
+                val order = mutableListOf<CardEntity>()
+                while (queue.isNotEmpty()) {
+                    val id = queue.removeFirst()
+                    if (!visited.add(id)) continue
+                    val c = db.cardDao().byId(id) ?: continue
+                    if (NodeParams.fromJson(c.paramsJson)?.prompt?.isNotBlank() == true) order += c
+                    db.cardLinkDao().outgoing(id).forEach { queue.addLast(it.toCardId) }
+                }
+                if (order.isEmpty()) {
+                    toast("没有可重跑的下游节点")
+                    return@launch
+                }
+                order.forEach { c -> regenerateOnce(c, t, asVariant = true) }
+                toast("已重跑 ${order.size} 个下游节点")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                lastError = e.message ?: "重跑下游失败"
+            }
+            markStateChanged()
+        }
+    }
+
+    /** 让 Agent 重做某个节点：把该节点上下文作为指令交给 Agent 重新规划执行 */
+    fun redoNodeWithAgent(card: CardEntity) {
+        nodeMenuCard = null
+        val p = NodeParams.fromJson(card.paramsJson)
+        agentInput = buildString {
+            append("重做这张${labelOf(card.kind)}节点，保持整体风格与引用关系，可优化提示词后重新生成。")
+            if (p?.prompt?.isNotBlank() == true) append("\n原提示词：${p.prompt}")
+            append("\n节点类型：${card.kind}")
+        }
+        sendAgent()
+    }
+
+    /** 把某素材文件夹放为画布「角色节点」，生成时可作为身份锚点参考 */
+    fun createCharacterNode(folder: AssetFolderEntity) {
+        viewModelScope.launch {
+            runCatching {
+                val (x, y) = nextCanvasPosition()
+                val seq = db.cardDao().maxSequence(conversationId) + 1
+                val params = NodeParams(
+                    prompt = folder.name,
+                    kind = MediaKind.IMAGE.name,
+                    characterFolderId = folder.id,
+                ).toJson()
+                db.cardDao().insert(
+                    CardEntity(
+                        id = java.util.UUID.randomUUID().toString(),
+                        runId = "character",
+                        conversationId = conversationId,
+                        sequence = seq,
+                        kind = MediaKind.IMAGE,
+                        title = folder.name,
+                        content = "角色/产品：${folder.name}",
+                        status = RunStatus.COMPLETED,
+                        x = x,
+                        y = y,
+                        paramsJson = params,
+                    ),
+                )
+                toast("已放置角色节点「${folder.name}」")
+            }.onFailure { e -> lastError = e.message ?: "创建角色节点失败" }
+            markStateChanged()
+        }
+    }
+
+    /** 展开角色节点绑定的素材路径（供生成作为身份参考） */
+    suspend fun characterPathsFor(cardIds: List<String>): List<String> {
+        val out = mutableListOf<String>()
+        cardIds.forEach { id ->
+            val c = db.cardDao().byId(id) ?: return@forEach
+            val folderId = NodeParams.fromJson(c.paramsJson)?.characterFolderId ?: return@forEach
+            db.assetDao().byFolder(folderId).mapNotNull { it.mediaPath }.forEach { out += it }
+        }
+        return out.distinct()
+    }
+
+    /** 保存画布快照（节点坐标 + 关系边），用于回滚/版本对比 */
+    fun snapshotCanvas(label: String = "") {
+        viewModelScope.launch {
+            runCatching {
+                val cs = db.cardDao().listByConversation(conversationId)
+                val links = cs.flatMap { db.cardLinkDao().outgoing(it.id) }
+                    .map { SnapshotLink(it.fromCardId, it.toCardId, it.role) }
+                    .distinct()
+                val payload = CanvasSnapshotPayload(
+                    nodes = cs.map { SnapshotNode(it.id, it.x, it.y, it.paramsJson, it.variantOf, it.version) },
+                    links = links,
+                    note = label,
+                )
+                db.canvasSnapshotDao().insert(
+                    CanvasSnapshotEntity(
+                        id = java.util.UUID.randomUUID().toString(),
+                        conversationId = conversationId,
+                        label = label.ifBlank { "快照 ${System.currentTimeMillis() % 100000}" },
+                        payloadJson = payload.toJson(),
+                        createdAt = System.currentTimeMillis(),
+                    ),
+                )
+                toast("已保存画布快照")
+            }.onFailure { e -> lastError = e.message ?: "保存快照失败" }
+        }
+    }
+
+    /** 回滚到某快照：恢复节点坐标/参数，并按快照重建关系边 */
+    fun restoreSnapshot(snapshot: CanvasSnapshotEntity) {
+        viewModelScope.launch {
+            try {
+                val payload = CanvasSnapshotPayload.fromJson(snapshot.payloadJson) ?: return@launch
+                val existing = db.cardDao().listByConversation(conversationId).associateBy { it.id }
+                payload.nodes.forEach { n ->
+                    if (existing.containsKey(n.id)) {
+                        db.cardDao().restorePosition(n.id, n.x, n.y)
+                        db.cardDao().restoreNodeMeta(n.id, n.paramsJson, n.variantOf, n.version)
+                    }
+                }
+                db.cardLinkDao().deleteByConversation(conversationId)
+                payload.links.forEach { l ->
+                    if (existing.containsKey(l.fromCardId) && existing.containsKey(l.toCardId)) {
+                        db.cardLinkDao().insert(
+                            CardLinkEntity(id = java.util.UUID.randomUUID().toString(), fromCardId = l.fromCardId, toCardId = l.toCardId, role = l.role),
+                        )
+                    }
+                }
+                clearCanvasSelection()
+                toast("已回滚到快照")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                lastError = e.message ?: "回滚快照失败"
+            }
+            markStateChanged()
+        }
+    }
+
+    fun deleteSnapshot(snapshot: CanvasSnapshotEntity) {
+        viewModelScope.launch { runCatching { db.canvasSnapshotDao().deleteById(snapshot.id) } }
+    }
+
+    /** 画布 → 成片：把选中的视频节点按 x 坐标从左到右拼接为一条视频并落卡 */
+    fun composeFilm(videoCards: List<CardEntity>) {
+        if (filmBusy) return
+        val ordered = videoCards.filter { it.kind == MediaKind.VIDEO }.sortedBy { it.x }
+        val inputs = ordered.mapNotNull { it.mediaPath }.map { File(it) }.filter { it.exists() }
+        if (inputs.size < 2) {
+            toast("至少需要 2 段可用的视频节点才能合成成片")
+            return
+        }
+        filmBusy = true
+        viewModelScope.launch {
+            try {
+                val out = File(media.mediaRoot(), "film_${System.currentTimeMillis()}.mp4")
+                val ok = withContext(Dispatchers.IO) { Mp4Concatenator.concat(inputs, out) }
+                if (!ok || !out.exists()) {
+                    toast("成片合成失败（分段编码参数可能不一致）")
+                    return@launch
+                }
+                val title = "成片 ${System.currentTimeMillis() % 100000}"
+                val asset = media.persistFromLocal(conversationId, "film", out, title, MediaKind.VIDEO)
+                out.delete()
+                val seq = db.cardDao().maxSequence(conversationId) + 1
+                val (x, y) = nextCanvasPosition()
+                val cardId = java.util.UUID.randomUUID().toString()
+                val params = NodeParams(
+                    prompt = "成片（${inputs.size} 段）",
+                    kind = MediaKind.VIDEO.name,
+                    referenceCardIds = ordered.map { it.id },
+                ).toJson()
+                db.cardDao().insert(
+                    CardEntity(
+                        id = cardId,
+                        runId = "film",
+                        conversationId = conversationId,
+                        sequence = seq,
+                        kind = MediaKind.VIDEO,
+                        title = title,
+                        content = "由 ${inputs.size} 段视频合成",
+                        mediaPath = asset.mediaPath,
+                        previewPath = asset.previewPath,
+                        status = RunStatus.COMPLETED,
+                        x = x,
+                        y = y,
+                        paramsJson = params,
+                    ),
+                )
+                ordered.forEach { vc ->
+                    db.cardLinkDao().insert(
+                        CardLinkEntity(id = java.util.UUID.randomUUID().toString(), fromCardId = vc.id, toCardId = cardId, role = "reference"),
+                    )
+                }
+                toast("成片已生成（${inputs.size} 段）")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                lastError = e.message ?: "成片合成失败"
+            } finally {
+                filmBusy = false
+            }
+            markStateChanged()
+        }
+    }
+
     fun clearError() {
         lastError = null
     }
@@ -1108,8 +1486,8 @@ class ChatViewModel @Inject constructor(
             runCatching {
                 val from = db.cardDao().byId(fromCardId) ?: return@launch
                 val to = db.cardDao().byId(toCardId) ?: return@launch
-                // 类型合法性防线：不符合「可参考类型矩阵」的连接直接拒绝
-                if (!canServeAsReference(from.kind, to.kind)) {
+                // 类型合法性防线：不符合「可参考类型矩阵」的连接直接拒绝；角色节点可作任意生成的身份参考
+                if (!isCharacterNode(from) && !canServeAsReference(from.kind, to.kind)) {
                     toast("不可连接：${labelOf(from.kind)}不能作为${labelOf(to.kind)}的输入参考")
                     return@launch
                 }

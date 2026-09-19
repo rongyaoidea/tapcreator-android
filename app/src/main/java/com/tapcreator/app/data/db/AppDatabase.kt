@@ -26,8 +26,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AssetFolderEntity::class,
         TraceEntity::class,
         ConversationStateEntity::class,
+        CanvasSnapshotEntity::class,
     ],
-    version = 16,
+    version = 17,
     autoMigrations = [AutoMigration(from = 15, to = 16)],
     // 导出 schema 快照：迁移出错时可 diff 出字段差异。schema 文件由 KSP 写入
     // app/schemas/（见 app/build.gradle.kts 的 ksp arg room.schemaLocation），入 git 留档。
@@ -52,6 +53,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun traceDao(): TraceDao
 
     abstract fun conversationStateDao(): ConversationStateDao
+
+    abstract fun canvasSnapshotDao(): CanvasSnapshotDao
 
     companion object {
         @Volatile
@@ -212,6 +215,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 节点自描述：留存生成参数，支持逐节点重跑/变体
+                db.execSQL("ALTER TABLE cards ADD COLUMN paramsJson TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE cards ADD COLUMN variantOf TEXT")
+                db.execSQL("ALTER TABLE cards ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+                // 画布快照：支持回滚与版本对比
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS canvas_snapshots (" +
+                        "id TEXT NOT NULL, " +
+                        "conversationId TEXT NOT NULL, " +
+                        "label TEXT NOT NULL, " +
+                        "payloadJson TEXT NOT NULL, " +
+                        "createdAt INTEGER NOT NULL, " +
+                        "PRIMARY KEY(id))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_canvas_snapshots_conversationId_createdAt " +
+                        "ON canvas_snapshots (conversationId, createdAt)"
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -219,7 +245,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "tapcreator.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_16_17)
                 // 去掉 destructive fallback：schema 不匹配直接启动崩溃（fail-fast），避免静默清空用户数据掩盖迁移遗漏。
                 // 后续新增字段务必先补 Migration 再接 version。
                 .build().also { instance = it }

@@ -19,6 +19,7 @@ import com.tapcreator.app.data.model.AuthFailedException
 import com.tapcreator.app.data.model.ChatMessage
 import com.tapcreator.app.data.model.GenerationPreferences
 import com.tapcreator.app.data.model.MediaKind
+import com.tapcreator.app.data.model.NodeParams
 import com.tapcreator.app.data.model.Protocol
 import com.tapcreator.app.data.model.RunRequest
 import com.tapcreator.app.data.model.RunStatus
@@ -244,7 +245,7 @@ class RunService @Inject constructor(
                     if (cur.status != RunStatus.RUNNING) db.agentRunDao().update(cur.copy(status = RunStatus.RUNNING))
                 }
                 val result = gateway.create(channel, secrets, model, enrichedPref)
-                persistOneCard(run, modelEntity, i, result, cardSeq, referencedCardIds, enrichedPref.promptEnhanced)
+                persistOneCard(run, modelEntity, i, result, cardSeq, referencedCardIds, enrichedPref.promptEnhanced, pref = enrichedPref)
                 cardSeq++
                 completed++
             }
@@ -382,7 +383,7 @@ class RunService @Inject constructor(
             val cardSeq = db.cardDao().maxSequence(run.conversationId) + 1
             // 拼接降级时在卡片内容标注，让用户知情（结果已保留，无需重试整轮）
             val note = if (concatDegraded) "${run.prompt}\n\n[分段拼接失败，仅保留单段]" else run.prompt
-            persistVideoCard(run, modelEntity, asset.id, cardSeq, referencedCardIds, mergedFile.absolutePath, note, basePref.promptEnhanced)
+            persistVideoCard(run, modelEntity, asset.id, cardSeq, referencedCardIds, mergedFile.absolutePath, note, basePref.promptEnhanced, pref = basePref)
             db.agentRunDao().byId(run.id)?.let {
                 db.agentRunDao().update(it.copy(status = RunStatus.COMPLETED, checkpoint = null, updatedAt = System.currentTimeMillis()))
             }
@@ -470,11 +471,25 @@ class RunService @Inject constructor(
         mediaPath: String,
         content: String = run.prompt,
         promptEnhanced: Boolean = false,
+        pref: GenerationPreferences? = null,
+        variantOf: String? = null,
     ) {
         // 文本模型为产出卡起名：避免视频卡标题退化成模型 id；失败回退模型名
         val videoTitle = suggestTitle(run.prompt, model.name, 0)
         // 落库坐标同样错位铺开，避免视频卡回到 (0,0) 盖住已有卡片
         val (x, y) = nextCardPosition(run.conversationId)
+        val nodeParams = NodeParams(
+            prompt = run.prompt,
+            kind = MediaKind.VIDEO.name,
+            modelId = model.id,
+            modelName = model.name,
+            ratio = pref?.ratio,
+            quality = pref?.quality,
+            resolution = pref?.resolution,
+            seconds = pref?.seconds,
+            referenceCardIds = referencedCardIds.distinct(),
+            variantOf = variantOf,
+        ).toJson()
         val card = CardEntity(
             id = UUID.randomUUID().toString(),
             runId = run.id,
@@ -489,6 +504,8 @@ class RunService @Inject constructor(
             x = x,
             y = y,
             promptEnhanced = promptEnhanced,
+            paramsJson = nodeParams,
+            variantOf = variantOf,
         )
         db.cardDao().insert(card)
         referencedCardIds.distinct().forEach { refId ->
@@ -784,6 +801,8 @@ class RunService @Inject constructor(
         seq: Int,
         referencedCardIds: List<String>,
         promptEnhanced: Boolean,
+        pref: GenerationPreferences? = null,
+        variantOf: String? = null,
     ) {
         // 文本模型为产出卡起名：避免卡片标题退化成模型 id；失败回退模型名
         val cardTitle = suggestTitle(run.prompt, model.name, index)
@@ -793,6 +812,18 @@ class RunService @Inject constructor(
 
         // 成品卡落库时按已有卡片数错位铺开，避免所有卡堆叠在 (0,0) 相互遮挡
         val (x, y) = nextCardPosition(run.conversationId)
+        val nodeParams = NodeParams(
+            prompt = run.prompt,
+            kind = run.kind.name,
+            modelId = model.id,
+            modelName = model.name,
+            ratio = pref?.ratio,
+            quality = pref?.quality,
+            resolution = pref?.resolution,
+            seconds = pref?.seconds,
+            referenceCardIds = referencedCardIds.distinct(),
+            variantOf = variantOf,
+        ).toJson()
         val card = CardEntity(
             id = UUID.randomUUID().toString(),
             runId = run.id,
@@ -808,6 +839,8 @@ class RunService @Inject constructor(
             x = x,
             y = y,
             promptEnhanced = promptEnhanced,
+            paramsJson = nodeParams,
+            variantOf = variantOf,
         )
         db.cardDao().insert(card)
 

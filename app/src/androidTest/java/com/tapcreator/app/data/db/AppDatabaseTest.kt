@@ -153,10 +153,12 @@ class AppDatabaseTest {
         ApplicationProvider.getApplicationContext<Context>().deleteDatabase(name)
     }
 
-    /** 验证 15→16 自动迁移（新增高频查询索引）不丢数据且索引生效 */
+    /**
+     * 验证 15→17 迁移链（15→16 自动迁移新增高频索引；16→17 手动迁移新增节点参数与画布快照）不丢数据。
+     */
     @Test
-    fun migrate15To16_autoIndexes() {
-        val name = "migration15to16"
+    fun migrate15To17_nodeParamsAndSnapshots() {
+        val name = "migration15to17"
         migrationTestHelper.createDatabase(name, 15).apply {
             execSQL(
                 "INSERT INTO cards (id, runId, conversationId, sequence, kind, title, content, status, x, y, deleted, promptEnhanced) " +
@@ -165,14 +167,25 @@ class AppDatabaseTest {
             close()
         }
         val migrated: SupportSQLiteDatabase = migrationTestHelper.runMigrationsAndValidate(
-            name, 16, true,
+            name, 17, true, AppDatabase.MIGRATION_16_17,
         )
         // 数据保留
         migrated.query("SELECT COUNT(*) FROM cards").use { c ->
             c.moveToFirst()
             assertEquals(1, c.getInt(0))
         }
-        // 索引存在：cards(conversationId) / agent_runs(status) / card_links(toCardId)
+        // 新列默认值：paramsJson=''，version=1（旧数据可自描述缺省）
+        migrated.query("SELECT paramsJson, version FROM cards").use { c ->
+            c.moveToFirst()
+            assertEquals("", c.getString(0))
+            assertEquals(1, c.getInt(1))
+        }
+        // 画布快照表已建立且为空
+        migrated.query("SELECT COUNT(*) FROM canvas_snapshots").use { c ->
+            c.moveToFirst()
+            assertEquals(0, c.getInt(0))
+        }
+        // 索引存在：cards(conversationId) 等
         val indexes = mutableListOf<String>()
         migrated.query("SELECT name, tbl_name FROM sqlite_master WHERE type='index'").use { c ->
             val nameIdx = c.getColumnIndex("name")

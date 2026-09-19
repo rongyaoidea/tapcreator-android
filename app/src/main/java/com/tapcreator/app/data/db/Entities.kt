@@ -167,6 +167,29 @@ data class CardEntity(
     val deleted: Boolean = false,
     /** 提示词是否经 LLM 增强（promptOptimize 开关且优化成功）；成品卡预览时据此标识「增强提示词」 */
     val promptEnhanced: Boolean = false,
+    /**
+     * 节点生成参数（NodeParams JSON）：提示词/模型/比例/分辨率/时长/参考。
+     * 使节点可脱离 runId 单独重跑或复制为变体（对齐竞品「逐节点可复现」能力）。
+     */
+    val paramsJson: String = "",
+    /** 由哪张卡派生（复制为变体时写入），构成变体链 */
+    val variantOf: String? = null,
+    /** 节点版本号：同源变体每次重跑 +1，用于版本对比 */
+    val version: Int = 1,
+)
+
+/** 画布快照：记录某时刻节点坐标与关系边，支持回滚与版本对比 */
+@Entity(
+    tableName = "canvas_snapshots",
+    indices = [Index(value = ["conversationId", "createdAt"])],
+)
+data class CanvasSnapshotEntity(
+    @PrimaryKey val id: String,
+    val conversationId: String,
+    val label: String = "",
+    /** CanvasSnapshotPayload JSON */
+    val payloadJson: String = "{}",
+    val createdAt: Long,
 )
 
 /** 卡片自由连接——关系图的边 */

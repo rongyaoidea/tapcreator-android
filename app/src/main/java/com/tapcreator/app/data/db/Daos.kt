@@ -318,6 +318,39 @@ interface CardDao {
 
     @Query("DELETE FROM cards WHERE conversationId = :conversationId")
     suspend fun deleteByConversation(conversationId: String)
+
+    /** 局部更新节点生成参数（重跑/变体后回写） */
+    @Query("UPDATE cards SET paramsJson = :paramsJson, version = :version, variantOf = :variantOf WHERE id = :id")
+    suspend fun updateParams(id: String, paramsJson: String, version: Int, variantOf: String?)
+
+    /** 批量恢复坐标（快照回滚用） */
+    @Query("UPDATE cards SET x = :x, y = :y WHERE id = :id")
+    suspend fun restorePosition(id: String, x: Float, y: Float)
+
+    /** 恢复参数（快照回滚用） */
+    @Query("UPDATE cards SET paramsJson = :paramsJson, variantOf = :variantOf, version = :version WHERE id = :id")
+    suspend fun restoreNodeMeta(id: String, paramsJson: String, variantOf: String?, version: Int)
+}
+
+@Dao
+interface CanvasSnapshotDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(snapshot: CanvasSnapshotEntity)
+
+    @Query("SELECT * FROM canvas_snapshots WHERE conversationId = :conversationId ORDER BY createdAt DESC")
+    fun observeByConversation(conversationId: String): Flow<List<CanvasSnapshotEntity>>
+
+    @Query("SELECT * FROM canvas_snapshots WHERE conversationId = :conversationId ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun listByConversation(conversationId: String, limit: Int = 20): List<CanvasSnapshotEntity>
+
+    @Query("SELECT * FROM canvas_snapshots WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): CanvasSnapshotEntity?
+
+    @Query("DELETE FROM canvas_snapshots WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM canvas_snapshots WHERE conversationId = :conversationId")
+    suspend fun deleteByConversation(conversationId: String)
 }
 
 @Dao
