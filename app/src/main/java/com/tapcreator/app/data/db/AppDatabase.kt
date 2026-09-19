@@ -1,7 +1,6 @@
 package com.tapcreator.app.data.db
 
 import android.content.Context
-import androidx.room.AutoMigration
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -29,7 +28,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CanvasSnapshotEntity::class,
     ],
     version = 17,
-    autoMigrations = [AutoMigration(from = 15, to = 16)],
+    // 15→16 原为 AutoMigration；因 16.json 未入库，版本跨过 16 后 Room 编译期找不到该 schema，
+    // 故改为等价的显式迁移（仅新增高频查询索引），不再依赖 16.json。
     // 导出 schema 快照：迁移出错时可 diff 出字段差异。schema 文件由 KSP 写入
     // app/schemas/（见 app/build.gradle.kts 的 ksp arg room.schemaLocation），入 git 留档。
     exportSchema = true,
@@ -215,6 +215,20 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** 15→16：为高频查询补索引（与原 AutoMigration 等价，索引名遵循 Room 命名规范） */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_agent_runs_status ON agent_runs (status)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_agent_runs_conversationId_status_createdAt ON agent_runs (conversationId, status, createdAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_assets_conversationId_createdAt ON assets (conversationId, createdAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_cards_conversationId ON cards (conversationId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_cards_runId ON cards (runId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_cards_conversationId_sequence ON cards (conversationId, sequence)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_card_links_toCardId ON card_links (toCardId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_agent_trace_conversationId_runId_turn ON agent_trace (conversationId, runId, turn)")
+            }
+        }
+
         val MIGRATION_16_17 = object : Migration(16, 17) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 // 节点自描述：留存生成参数，支持逐节点重跑/变体
@@ -245,7 +259,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "tapcreator.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_16_17)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17)
                 // 去掉 destructive fallback：schema 不匹配直接启动崩溃（fail-fast），避免静默清空用户数据掩盖迁移遗漏。
                 // 后续新增字段务必先补 Migration 再接 version。
                 .build().also { instance = it }

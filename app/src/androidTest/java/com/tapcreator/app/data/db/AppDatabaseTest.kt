@@ -167,7 +167,7 @@ class AppDatabaseTest {
             close()
         }
         val migrated: SupportSQLiteDatabase = migrationTestHelper.runMigrationsAndValidate(
-            name, 17, true, AppDatabase.MIGRATION_16_17,
+            name, 17, true, AppDatabase.MIGRATION_15_16, AppDatabase.MIGRATION_16_17,
         )
         // 数据保留
         migrated.query("SELECT COUNT(*) FROM cards").use { c ->
