@@ -52,6 +52,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,6 +66,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
@@ -121,7 +124,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
     onBack: () -> Unit,
@@ -138,8 +141,9 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     // 长按删除确认：持有待执行删除动作
     var pendingDelete by remember { mutableStateOf<(() -> Unit)?>(null) }
-    // 自主 Agent：浮动按钮呼出
+    // 自主 Agent：浮动按钮呼出；展开态（半屏 ↔ 近全屏）可切换
     var agentOpen by rememberSaveable { mutableStateOf(false) }
+    var agentPanelExpanded by rememberSaveable { mutableStateOf(false) }
     // 「关联」入口：在工作界面直接编辑该卡与其它卡的输入/输出参考关系
     var linkTarget by rememberSaveable { mutableStateOf<String?>(null) }
     // 会话名称手动编辑
@@ -240,7 +244,6 @@ fun ChatScreen(
                     },
                     isCharacterNode = viewModel::isCharacterNode,
                     onCommitPositions = viewModel::commitNodePositions,
-                    onToggleFilter = { canvasFilter = it },
                     onAutoLayout = viewModel::autoLayoutCanvas,
                     onDeleteSelected = viewModel::deleteSelectedNodes,
                     modifier = Modifier.fillMaxSize(),
@@ -268,13 +271,42 @@ fun ChatScreen(
                     }
                 }
                 if (cards.isEmpty()) {
-                    Text(
-                        text = "画布为空 —— 点下方「新建」添加节点开始创作",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.align(Alignment.Center).padding(horizontal = 24.dp),
-                    )
+                    // 空画布起稿引导：模板一键预填提示词并进入编辑态
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(horizontal = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = "画布为空 —— 选一个模板起稿，或点下方「新建节点」",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            TemplateChip("产品海报") {
+                                viewModel.startDraftWithPrompt(MediaKind.IMAGE, "极简风格产品海报，居中构图，柔和光影，大面积留白。产品：")
+                                draftEditorOpen = true
+                            }
+                            TemplateChip("角色三视图") {
+                                viewModel.startDraftWithPrompt(MediaKind.IMAGE, "角色设计三视图（正面/侧面/背面），全身，干净纯色背景。角色设定：")
+                                draftEditorOpen = true
+                            }
+                            TemplateChip("电影感短视频") {
+                                viewModel.startDraftWithPrompt(MediaKind.VIDEO, "电影感短视频，缓慢推镜，暖色调，浅景深。画面：")
+                                draftEditorOpen = true
+                            }
+                            TemplateChip("分镜脚本") {
+                                viewModel.startDraftWithPrompt(MediaKind.TEXT, "写一个 15 秒短视频的分镜脚本，逐镜头给出画面描述与旁白。主题：")
+                                draftEditorOpen = true
+                            }
+                        }
+                    }
                 }
                 // 画布内 Agent 面板：可收起，不遮挡整块画布（对齐竞品「Agent 常驻画布」）
                 if (agentOpen) {
@@ -282,7 +314,7 @@ fun ChatScreen(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            .fillMaxHeight(0.74f)
+                            .fillMaxHeight(if (agentPanelExpanded) 0.94f else 0.62f)
                             // 面板内空白区域也吞掉手势，避免拖动穿透到下层画布
                             .pointerInput(Unit) { detectTapGestures { } }
                             .pointerInput(Unit) { detectDragGestures { change, _ -> change.consume() } },
@@ -295,6 +327,8 @@ fun ChatScreen(
                             vm = viewModel,
                             onDismiss = { agentOpen = false },
                             onPickFromLibrary = { libraryPickerOpen = true },
+                            expanded = agentPanelExpanded,
+                            onToggleExpand = { agentPanelExpanded = !agentPanelExpanded },
                         )
                     }
                 }
@@ -370,57 +404,45 @@ fun ChatScreen(
         }
     }
 
-    // 空白卡片编辑浮层：点时间线上的空白卡片后弹出「输入 + 参数」，提交后生成
-    // 用独立 Dialog 框替代 ModalBottomSheet：避免面板从下滑出时跳动、按钮点击刷新跳动
+    // 空白卡片编辑：与节点检查器统一的底部抽屉；点空白卡或从「新建节点」选类型后弹出
     if (draftEditorOpen && viewModel.draftKind != null) {
-        androidx.compose.ui.window.Dialog(
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
             onDismissRequest = {
-                // 关浮层=放弃这次创作，一并清掉草稿卡与 draftKind，避免残留导致下一次打开/输入异常
+                // 关抽屉=放弃这次编辑，一并清掉 draftKind；空白卡本身保留在画布上
                 viewModel.clearDraft()
                 draftEditorOpen = false
             },
-            properties = androidx.compose.ui.window.DialogProperties(
-                usePlatformDefaultWidth = false,
-                decorFitsSystemWindows = false, // 让输入法正确触发窗口调整
-            ),
+            sheetState = sheetState,
         ) {
-            Surface(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 24.dp),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 6.dp,
-                shadowElevation = 8.dp,
+                    .verticalScroll(rememberScrollState())
+                    .imePadding()
+                    .padding(vertical = 4.dp),
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState())
-                        .imePadding()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                ) {
-                    Text(
-                        text = when (viewModel.draftKind) {
-                            MediaKind.IMAGE -> "生图"
-                            MediaKind.VIDEO -> "生视频"
-                            MediaKind.TEXT -> "生文本"
-                            MediaKind.AUDIO -> "生音频"
-                            else -> "创作"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-                    CreationCard(viewModel, onSent = {
-                        draftEditorOpen = false
-                    }, onPickFromCanvas = {
-                        draftEditorOpen = false
-                        canvasPickingRef = true
-                    }, onPickFromLibrary = {
-                        draftEditorOpen = false
-                        libraryPickerOpen = true
-                    })
-                }
+                Text(
+                    text = when (viewModel.draftKind) {
+                        MediaKind.IMAGE -> "生图"
+                        MediaKind.VIDEO -> "生视频"
+                        MediaKind.TEXT -> "生文本"
+                        MediaKind.AUDIO -> "生音频"
+                        else -> "创作"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 8.dp),
+                )
+                CreationCard(viewModel, onSent = {
+                    draftEditorOpen = false
+                }, onPickFromCanvas = {
+                    draftEditorOpen = false
+                    canvasPickingRef = true
+                }, onPickFromLibrary = {
+                    draftEditorOpen = false
+                    libraryPickerOpen = true
+                })
+                androidx.compose.foundation.layout.Spacer(Modifier.padding(bottom = 12.dp))
             }
         }
     }
@@ -530,6 +552,11 @@ fun ChatScreen(
                 // 立即展开画布内 Agent 面板，让用户看到重做进度（否则指令发出却看不到反馈）
                 agentOpen = true
             },
+            onEditDraft = {
+                viewModel.dismissNodeMenu()
+                viewModel.openDraftEditor(card.id, card.kind)
+                draftEditorOpen = true
+            },
             onDelete = { viewModel.deleteCard(card) },
         )
     }
@@ -548,6 +575,8 @@ fun ChatScreen(
     // 画布「更多」：快照 / 快照历史 / 合成成片 / 角色节点
     if (canvasMenuOpen) {
         CanvasMenuSheet(
+            filterKind = canvasFilter,
+            onToggleFilter = { canvasFilter = it },
             onDismiss = { canvasMenuOpen = false },
             onSnapshot = {
                 viewModel.snapshotCanvas()
@@ -651,6 +680,7 @@ private fun NodeMenuSheet(
     onDuplicate: () -> Unit,
     onRerunDownstream: () -> Unit,
     onAgentRedo: () -> Unit,
+    onEditDraft: () -> Unit,
     onDelete: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -664,19 +694,45 @@ private fun NodeMenuSheet(
                 text = card.title.ifBlank { card.kind.name },
                 style = MaterialTheme.typography.titleMedium,
             )
-            val summary = com.tapcreator.app.data.model.NodeParams.fromJson(card.paramsJson)?.summary()
+            val params = NodeParams.fromJson(card.paramsJson)
+            val isCharacter = params?.characterFolderId != null
+            val isFilm = card.runId == "film"
+            val isMaterial = card.runId == "material"
+            val isDraft = card.runId == "draft"
             Text(
-                text = (summary?.takeIf { it.isNotBlank() } ?: "未留存生成参数")
-                    + (if (card.variantOf != null) " · 变体 v${card.version}" else ""),
+                text = when {
+                    isDraft -> "空白卡 · 待填写内容"
+                    isCharacter -> "角色锚点节点"
+                    isFilm -> "成片节点（由多段视频合成）"
+                    isMaterial -> "素材节点"
+                    else -> (params?.summary()?.takeIf { it.isNotBlank() } ?: "未留存生成参数") +
+                        (if (card.variantOf != null) " · 变体 v${card.version}" else "")
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 6.dp),
             )
-            SheetAction("编辑参数 / 重跑", "改提示词、换模型、调比例后原地重跑", onViewParams)
-            SheetAction("重新生成为变体", "保留原节点，用相同参数重跑一份", onRegenerate)
-            SheetAction("复制节点", "复制参数与引用，之后可单独改", onDuplicate)
-            SheetAction("重跑下游节点", "沿引用链重算所有下游", onRerunDownstream)
-            SheetAction("让 Agent 重做", "交给 Agent 重新规划生成", onAgentRedo)
+            // 按节点类型裁剪动作，避免出现点了没反应的菜单项
+            when {
+                isDraft -> {
+                    SheetAction("填写内容并生成", "打开创作面板填提示词与参数", onEditDraft)
+                }
+                isCharacter -> {
+                    Text(
+                        "在「新建节点」里把素材文件夹放为角色节点；连线到生成节点即可作为身份参考。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                isFilm || isMaterial -> Unit
+                else -> {
+                    SheetAction("编辑参数 / 重跑", "改提示词、换模型、调比例后原地重跑", onViewParams)
+                    SheetAction("重新生成为变体", "保留原节点，用相同参数重跑一份", onRegenerate)
+                    SheetAction("复制节点", "复制参数与引用，之后可单独改", onDuplicate)
+                    SheetAction("重跑下游节点", "沿引用链重算所有下游", onRerunDownstream)
+                    SheetAction("让 Agent 重做", "交给 Agent 重新规划生成", onAgentRedo)
+                }
+            }
             SheetAction("删除节点", "从画布移除（仍被引用则隐藏）", onDelete, danger = true)
             androidx.compose.foundation.layout.Spacer(Modifier.padding(bottom = 12.dp))
         }
@@ -703,6 +759,23 @@ private fun SheetAction(title: String, subtitle: String, onClick: () -> Unit, da
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/** 空画布模板起稿 chip */
+@Composable
+private fun TemplateChip(text: String, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+        )
     }
 }
 
@@ -829,9 +902,11 @@ private fun NodeInspectorSheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun CanvasMenuSheet(
+    filterKind: MediaKind?,
+    onToggleFilter: (MediaKind?) -> Unit,
     onDismiss: () -> Unit,
     onSnapshot: () -> Unit,
     onOpenSnapshots: () -> Unit,
@@ -847,6 +922,34 @@ private fun CanvasMenuSheet(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             Text("画布工具", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
+            // 筛选：从顶部工具栏收进这里，画布更干净
+            Text(
+                "显示节点",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val options = listOf<MediaKind?>(null, MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.AUDIO)
+                val labels = mapOf<MediaKind?, String>(
+                    null to "全部", MediaKind.IMAGE to "图片", MediaKind.VIDEO to "视频", MediaKind.AUDIO to "音频",
+                )
+                options.forEach { kind ->
+                    FilterChip(
+                        selected = filterKind == kind,
+                        onClick = { onToggleFilter(kind) },
+                        label = { Text(labels[kind] ?: "全部", style = MaterialTheme.typography.labelSmall) },
+                        colors = FilterChipDefaults.filterChipColors(),
+                    )
+                }
+            }
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 10.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
             SheetAction("保存画布快照", "记录当前节点坐标与关系，可回滚", onSnapshot)
             SheetAction("快照历史", "查看并回滚到历史版本", onOpenSnapshots)
             SheetAction(
@@ -1271,7 +1374,13 @@ private fun formatActionText(raw: String): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit, onPickFromLibrary: () -> Unit = {}) {
+private fun AgentSheet(
+    vm: ChatViewModel,
+    onDismiss: () -> Unit,
+    onPickFromLibrary: () -> Unit = {},
+    expanded: Boolean = false,
+    onToggleExpand: () -> Unit = {},
+) {
     // 参数折叠：默认收起，聚焦对话；点「参数」展开模型/开关/参考
     var showParams by remember { mutableStateOf(false) }
     // Agent 执行对话的滚动状态：新输出到达时跟随到底部
@@ -1297,6 +1406,14 @@ private fun AgentSheet(vm: ChatViewModel, onDismiss: () -> Unit, onPickFromLibra
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f),
             )
+            // 半屏 ↔ 近全屏：长对话时展开，边看画布时收起
+            IconButton(onClick = onToggleExpand) {
+                Icon(
+                    imageVector = if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp,
+                    contentDescription = if (expanded) "收起面板" else "展开面板",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             vm.agentProgress?.let { (_done, _total) ->
                 CardButton("取消", onClick = { vm.cancelAgent() })
             }

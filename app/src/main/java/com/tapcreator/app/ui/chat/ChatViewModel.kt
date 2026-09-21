@@ -239,6 +239,12 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /** 模板起稿：预填提示词并直接进入编辑态（空画布引导用） */
+    fun startDraftWithPrompt(kind: MediaKind, prompt: String) {
+        onInputChange(prompt)
+        startDraft(kind, openEditor = true)
+    }
+
     /** 点某张空白卡：打开提交面板开始编辑它（写入该卡的 prompt/参数并提交） */
     fun openDraftEditor(cardId: String, kind: MediaKind) {
         draftKind = kind

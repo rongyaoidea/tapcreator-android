@@ -9,8 +9,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -39,8 +37,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -131,7 +127,6 @@ fun CanvasWorkspace(
     canConnect: (from: CardEntity, to: CardEntity) -> Boolean,
     isCharacterNode: (CardEntity) -> Boolean,
     onCommitPositions: (updates: List<Pair<String, Pair<Float, Float>>>) -> Unit,
-    onToggleFilter: (MediaKind?) -> Unit,
     onAutoLayout: () -> Unit,
     onDeleteSelected: () -> Unit,
     modifier: Modifier = Modifier,
@@ -442,11 +437,10 @@ fun CanvasWorkspace(
         )
 
         CanvasToolbar(
-            filterKind = filterKind,
+            filterActive = filterKind != null,
             selectMode = selectMode,
             canUndo = canUndo,
             canRedo = canRedo,
-            onToggleFilter = onToggleFilter,
             onAutoLayout = onAutoLayout,
             onUndo = onUndo,
             onRedo = onRedo,
@@ -720,42 +714,24 @@ private fun ZoomButton(text: String, onClick: () -> Unit) {
 
 @Composable
 private fun CanvasToolbar(
-    filterKind: MediaKind?,
+    filterActive: Boolean,
     selectMode: Boolean,
     canUndo: Boolean,
     canRedo: Boolean,
-    onToggleFilter: (MediaKind?) -> Unit,
     onAutoLayout: () -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onToggleSelectMode: () -> Unit,
     onOpenCanvasMenu: () -> Unit,
 ) {
-    val kinds = listOf<MediaKind?>(null, MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.AUDIO)
-    val labels = mapOf<MediaKind?, String>(
-        null to "全部", MediaKind.IMAGE to "图", MediaKind.VIDEO to "视频",
-        MediaKind.AUDIO to "音频",
-    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 8.dp, vertical = 6.dp)
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        kinds.forEach { kind ->
-            FilterChip(
-                selected = filterKind == kind,
-                onClick = { onToggleFilter(kind) },
-                label = { Text(labels[kind] ?: "全部", style = MaterialTheme.typography.labelSmall) },
-                leadingIcon = if (kind == null) null else {
-                    { Box(Modifier.size(8.dp).background(kindColor(kind), CircleShape)) }
-                },
-                colors = FilterChipDefaults.filterChipColors(),
-            )
-        }
         ToolbarIcon(
             icon = Icons.Filled.CropFree,
             desc = "框选",
@@ -779,8 +755,8 @@ private fun CanvasToolbar(
         )
         ToolbarIcon(
             icon = Icons.Filled.MoreVert,
-            desc = "更多",
-            active = false,
+            desc = "画布菜单",
+            active = filterActive || false,
             onClick = onOpenCanvasMenu,
         )
     }
