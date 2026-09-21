@@ -52,8 +52,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -162,8 +160,12 @@ fun ChatScreen(
     var snapshotSheetOpen by remember { mutableStateOf(false) }
     // 节点面板（新建文本/音频/上传/角色等节点）
     var paletteOpen by remember { mutableStateOf(false) }
+    // 本次上传是「落素材节点」还是「加入参考素材」：由触发入口决定
+    var pendingUploadAsNode by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val mediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val asNode = pendingUploadAsNode
+        pendingUploadAsNode = false
         if (uri != null) {
             runCatching {
                 context.contentResolver.takePersistableUriPermission(
@@ -171,7 +173,7 @@ fun ChatScreen(
                     android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
             }
-            viewModel.importLocalMedia(uri)
+            viewModel.importLocalMedia(uri, asNode = asNode)
         }
     }
     // 打开发卡编辑面板的回调（供 CreationCard/InputBar 使用）：
@@ -232,6 +234,7 @@ fun ChatScreen(
                     onRedo = viewModel::redoCanvas,
                     canUndo = viewModel.canUndo,
                     canRedo = viewModel.canRedo,
+                    showSelectionActions = !canvasPickingRef,
                     canConnect = { from, to ->
                         viewModel.isCharacterNode(from) || viewModel.canServeAsReference(from.kind, to.kind)
                     },
@@ -297,7 +300,7 @@ fun ChatScreen(
                 }
             }
 
-            // 底部创作区：仅保留「生图/生视频」两个入口；点选后先生成一张待创作卡片，点卡片才弹出输入与参数
+            // 底部创作区：新建节点 / Agent；点「新建节点」选类型后画布出现空白卡，点卡填写内容与参数
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -352,26 +355,15 @@ fun ChatScreen(
                 }
             }
 
-            // 引导：点下方按钮在时间线生成一张该类型空白卡片
-            Text(
-                text = "点击下方选择「生图」或「生视频」，卡片出现后点卡片即可填写内容并生成",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-
-            // 底部入口：新建（节点面板）/ 生图 / 生视频 / Agent
+            // 底部入口收敛为两个：新建节点（类型面板）+ Agent 创作
+            // 具体的图片/视频/文本/音频/上传/角色入口都在「新建节点」面板里，避免底部按钮重复堆叠
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                BottomActionButton(text = "新建", tint = MaterialTheme.colorScheme.tertiary, icon = Icons.Filled.Add, onClick = { paletteOpen = true })
-                BottomActionButton(text = "生图", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.Image, onClick = { viewModel.startDraft(MediaKind.IMAGE) })
-                BottomActionButton(text = "生视频", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.Movie, onClick = { viewModel.startDraft(MediaKind.VIDEO) })
+                BottomActionButton(text = "新建节点", tint = MaterialTheme.colorScheme.tertiary, icon = Icons.Filled.Add, onClick = { paletteOpen = true })
                 BottomActionButton(text = "Agent", tint = MaterialTheme.colorScheme.primary, icon = Icons.Filled.AutoAwesome, onClick = { agentOpen = !agentOpen })
             }
             }
@@ -409,7 +401,13 @@ fun ChatScreen(
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
                     Text(
-                        text = if (viewModel.draftKind == MediaKind.IMAGE) "生图" else "生视频",
+                        text = when (viewModel.draftKind) {
+                            MediaKind.IMAGE -> "生图"
+                            MediaKind.VIDEO -> "生视频"
+                            MediaKind.TEXT -> "生文本"
+                            MediaKind.AUDIO -> "生音频"
+                            else -> "创作"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
@@ -527,7 +525,11 @@ fun ChatScreen(
             onRegenerate = { viewModel.regenerateNode(card, asVariant = true) },
             onDuplicate = { viewModel.duplicateNodeAsVariant(card) },
             onRerunDownstream = { viewModel.rerunDownstream(card) },
-            onAgentRedo = { viewModel.redoNodeWithAgent(card) },
+            onAgentRedo = {
+                viewModel.redoNodeWithAgent(card)
+                // 立即展开画布内 Agent 面板，让用户看到重做进度（否则指令发出却看不到反馈）
+                agentOpen = true
+            },
             onDelete = { viewModel.deleteCard(card) },
         )
     }
@@ -562,11 +564,6 @@ fun ChatScreen(
                 viewModel.composeFilm(pool)
                 canvasMenuOpen = false
             },
-            folders = assetFolders,
-            onPickCharacter = { folder ->
-                viewModel.createCharacterNode(folder)
-                canvasMenuOpen = false
-            },
         )
     }
 
@@ -585,10 +582,12 @@ fun ChatScreen(
         NodePaletteSheet(
             onDismiss = { paletteOpen = false },
             onPickKind = { kind ->
-                viewModel.startDraft(kind)
+                viewModel.startDraft(kind, openEditor = true)
+                draftEditorOpen = true
                 paletteOpen = false
             },
             onUpload = {
+                pendingUploadAsNode = true
                 mediaPicker.launch(arrayOf("image/*", "audio/*", "video/*"))
                 paletteOpen = false
             },
@@ -838,8 +837,6 @@ private fun CanvasMenuSheet(
     onOpenSnapshots: () -> Unit,
     selectedVideoCount: Int,
     onComposeFilm: () -> Unit,
-    folders: List<com.tapcreator.app.data.db.AssetFolderEntity>,
-    onPickCharacter: (com.tapcreator.app.data.db.AssetFolderEntity) -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -857,19 +854,6 @@ private fun CanvasMenuSheet(
                 if (selectedVideoCount > 0) "将选中的 $selectedVideoCount 段视频按位置拼接" else "将画布所有视频按位置拼接（至少 2 段）",
                 onComposeFilm,
             )
-            Text(
-                "角色节点",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
-            )
-            if (folders.isEmpty()) {
-                Text("暂无素材文件夹（在素材库创建角色/产品文件夹）", style = MaterialTheme.typography.labelSmall)
-            } else {
-                folders.forEach { f ->
-                    SheetAction(f.name, "类型：${f.kind}", { onPickCharacter(f) })
-                }
-            }
             androidx.compose.foundation.layout.Spacer(Modifier.padding(bottom = 12.dp))
         }
     }
@@ -1602,7 +1586,8 @@ private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromC
                 }
             }
         }
-        // 分辨率：宽×高 双数字输入框（只填数字，中间 × 内置）；若模型声明了已知档位，另排一批快捷 chips 点选填充
+        // 分辨率：宽×高 双数字输入框（只填数字，中间 × 内置）；仅图片/视频有意义
+        if (vm.selectedKind == MediaKind.IMAGE || vm.selectedKind == MediaKind.VIDEO) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1666,6 +1651,7 @@ private fun CreationCard(vm: ChatViewModel, onSent: () -> Unit = {}, onPickFromC
                     }
                 }
             }
+        }
         }
         Row(
             modifier = Modifier

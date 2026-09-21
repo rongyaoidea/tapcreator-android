@@ -15,7 +15,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
@@ -124,6 +126,8 @@ fun CanvasWorkspace(
     onRedo: () -> Unit,
     canUndo: Boolean,
     canRedo: Boolean,
+    /** 参考选卡模式下关闭「选中浮动条」（此时 selectedIds 表示已选参考，不是画布选中） */
+    showSelectionActions: Boolean = true,
     canConnect: (from: CardEntity, to: CardEntity) -> Boolean,
     isCharacterNode: (CardEntity) -> Boolean,
     onCommitPositions: (updates: List<Pair<String, Pair<Float, Float>>>) -> Unit,
@@ -439,7 +443,6 @@ fun CanvasWorkspace(
 
         CanvasToolbar(
             filterKind = filterKind,
-            hasSelection = selectedIds.isNotEmpty(),
             selectMode = selectMode,
             canUndo = canUndo,
             canRedo = canRedo,
@@ -447,11 +450,6 @@ fun CanvasWorkspace(
             onAutoLayout = onAutoLayout,
             onUndo = onUndo,
             onRedo = onRedo,
-            onRerunSelected = onRerunSelected,
-            onDelete = {
-                onDeleteSelected()
-                multiSelect = false
-            },
             onToggleSelectMode = {
                 selectMode = !selectMode
                 if (!selectMode) {
@@ -462,36 +460,107 @@ fun CanvasWorkspace(
             onOpenCanvasMenu = onOpenCanvasMenu,
         )
 
-        // 小地图
-        if (cards.size >= 4) {
-            CanvasMinimap(
-                cards = cards,
-                filterKind = filterKind,
-                scale = scale,
-                pan = pan,
-                densityPx = density.density,
-                viewport = viewport,
+        // 选中态：底部浮动操作条（重跑/删除/取消），此时隐藏小地图与缩放控件避免拥挤
+        if (showSelectionActions && selectedIds.isNotEmpty()) {
+            Surface(
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(12.dp)
-                    .size(120.dp, 84.dp),
-            )
-        }
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp),
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                tonalElevation = 6.dp,
+                shadowElevation = 6.dp,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "已选 ${selectedIds.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 6.dp),
+                    )
+                    SelectionAction(Icons.Filled.PlayArrow, "重跑", onRerunSelected)
+                    SelectionAction(Icons.Filled.Delete, "删除", onDeleteSelected)
+                    SelectionAction(Icons.Filled.Close, "取消", onClearSelection)
+                }
+            }
+        } else {
+            // 小地图
+            if (cards.size >= 4) {
+                CanvasMinimap(
+                    cards = cards,
+                    filterKind = filterKind,
+                    scale = scale,
+                    pan = pan,
+                    densityPx = density.density,
+                    viewport = viewport,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(12.dp)
+                        .size(120.dp, 84.dp),
+                )
+            }
 
-        // 缩放控制
-        Row(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            ZoomButton("zoom_in") { scale = (scale * 1.25f).coerceAtMost(MAX_SCALE) }
-            ZoomButton("zoom_out") { scale = (scale / 1.25f).coerceAtLeast(MIN_SCALE) }
-            ZoomButton("reset") {
-                scale = 1f
-                pan = Offset.Zero
+            // 缩放控制
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                ZoomButton("zoom_in") { scale = (scale * 1.25f).coerceAtMost(MAX_SCALE) }
+                ZoomButton("zoom_out") { scale = (scale / 1.25f).coerceAtLeast(MIN_SCALE) }
+                ZoomButton("fit") {
+                    // 适配视图：把全部节点缩放到刚好铺满视口（替代固定重置，避免大画布回去后看不到内容）
+                    val shown = cards.filter { filterKind == null || it.kind == filterKind }
+                    if (shown.isEmpty() || viewport == IntSize.Zero) {
+                        scale = 1f
+                        pan = Offset.Zero
+                    } else {
+                        val minX = shown.minOf { it.x } * density.density
+                        val maxX = (shown.maxOf { it.x } + NODE_W.value) * density.density
+                        val minY = shown.minOf { it.y } * density.density
+                        val maxY = (shown.maxOf { it.y } + NODE_H_GUESS) * density.density
+                        val contentW = (maxX - minX).coerceAtLeast(1f)
+                        val contentH = (maxY - minY).coerceAtLeast(1f)
+                        val k = minOf(
+                            viewport.width.toFloat() / contentW,
+                            viewport.height.toFloat() / contentH,
+                        ).coerceIn(MIN_SCALE, MAX_SCALE) * 0.9f
+                        scale = k
+                        pan = Offset(
+                            viewport.width / 2f - ((minX + maxX) / 2f) * k,
+                            viewport.height / 2f - ((minY + maxY) / 2f) * k,
+                        )
+                    }
+                }
             }
         }
+    }
+}
+
+/** 选中浮动条上的图标动作 */
+@Composable
+private fun SelectionAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    desc: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+        modifier = Modifier.size(36.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = desc,
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(8.dp),
+        )
     }
 }
 
@@ -619,13 +688,13 @@ private fun ZoomButton(text: String, onClick: () -> Unit) {
     val icon = when (text) {
         "zoom_in" -> Icons.Filled.Add
         "zoom_out" -> Icons.Filled.Remove
-        "reset" -> Icons.Filled.CenterFocusStrong
+        "fit" -> Icons.Filled.CenterFocusStrong
         else -> Icons.Filled.Add
     }
     val desc = when (text) {
         "zoom_in" -> "放大"
         "zoom_out" -> "缩小"
-        "reset" -> "重置视图"
+        "fit" -> "适配视图"
         else -> text
     }
     val interactionSource = androidx.compose.runtime.remember { MutableInteractionSource() }
@@ -652,7 +721,6 @@ private fun ZoomButton(text: String, onClick: () -> Unit) {
 @Composable
 private fun CanvasToolbar(
     filterKind: MediaKind?,
-    hasSelection: Boolean,
     selectMode: Boolean,
     canUndo: Boolean,
     canRedo: Boolean,
@@ -660,8 +728,6 @@ private fun CanvasToolbar(
     onAutoLayout: () -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
-    onRerunSelected: () -> Unit,
-    onDelete: () -> Unit,
     onToggleSelectMode: () -> Unit,
     onOpenCanvasMenu: () -> Unit,
 ) {
@@ -711,10 +777,6 @@ private fun CanvasToolbar(
             enabled = canRedo,
             onClick = onRedo,
         )
-        if (hasSelection) {
-            TooltipText(onRerunSelected, "重跑选中")
-            TooltipText(onDelete, "删除选中")
-        }
         ToolbarIcon(
             icon = Icons.Filled.MoreVert,
             desc = "更多",
@@ -842,7 +904,8 @@ private fun CanvasNode(
                         .padding(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    if (onRun != null) {
+                    // 运行按钮仅在选中时出现：未选中节点保持干净，重跑也可从「⋯」菜单进入
+                    if (onRun != null && selected) {
                         Surface(
                             onClick = onRun,
                             shape = CircleShape,

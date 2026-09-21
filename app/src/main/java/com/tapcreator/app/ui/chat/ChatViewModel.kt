@@ -208,8 +208,14 @@ class ChatViewModel @Inject constructor(
      * 点「生图/生视频」：每次新建一张独立的空白媒体卡（runId='draft' 落在画布上）。
      * 多张空白卡互不覆盖（id 唯一、坐标错位），可同时添加任意数量的图卡/视频卡。
      */
-    fun startDraft(kind: MediaKind) {
+    fun startDraft(kind: MediaKind, openEditor: Boolean = false) {
         val id = "draft_${java.util.UUID.randomUUID().toString().replace("-", "")}"
+        // 从类型面板直接新建时，同步进入编辑态：面板选完类型即可填内容，少一次「再点卡片」
+        if (openEditor) {
+            draftKind = kind
+            editingDraftId = id
+            setKind(kind)
+        }
         viewModelScope.launch {
             val count = runCatching { db.cardDao().listByConversation(conversationId) }
                 .getOrNull().orEmpty().size
@@ -454,8 +460,12 @@ class ChatViewModel @Inject constructor(
     // 推理深度级别已移除——始终使用 AUTO
     // fun updateThinkingLevel(level: ThinkingLevel) { ... }
 
-    /** 从系统文件选择器导入本地图片/视频：登记为素材库资源，并自动加入参考素材 */
-    fun importLocalMedia(uri: Uri) {
+    /**
+     * 从系统文件选择器导入本地图片/视频：登记为素材库资源。
+     * @param asNode true=在画布上落一张「素材节点」（node-first 的节点面板入口用）；
+     *               false=自动加入本次生成的参考素材（创作面板/Agent 附件用）。
+     */
+    fun importLocalMedia(uri: Uri, asNode: Boolean = false) {
         val scheme = uri.scheme
         if (scheme != "content" && scheme != "file") return
         val mime = runCatching { appContext.contentResolver.getType(uri) }.getOrNull()?.lowercase() ?: ""
@@ -465,9 +475,33 @@ class ChatViewModel @Inject constructor(
             else -> MediaKind.IMAGE
         }
         viewModelScope.launch {
+            val undoBefore = if (asNode) captureCanvasState() else null
             try {
                 val asset = media.importFromUri(conversationId, uri, kind, "上传 ${kind.name.lowercase()}")
-                selectedReferenceAssets = selectedReferenceAssets.filterNot { it.mediaPath == asset.mediaPath } + asset
+                if (asNode) {
+                    val (x, y) = nextCanvasPosition()
+                    val seq = db.cardDao().maxSequence(conversationId) + 1
+                    db.cardDao().insert(
+                        CardEntity(
+                            id = java.util.UUID.randomUUID().toString(),
+                            runId = "material",
+                            conversationId = conversationId,
+                            sequence = seq,
+                            kind = kind,
+                            title = asset.title.ifBlank { "上传素材" },
+                            content = "本地素材",
+                            previewPath = asset.previewPath,
+                            mediaPath = asset.mediaPath,
+                            status = RunStatus.COMPLETED,
+                            x = x,
+                            y = y,
+                        ),
+                    )
+                    if (undoBefore != null) pushUndo(undoBefore, captureCanvasState())
+                    toast("已作为素材节点放到画布")
+                } else {
+                    selectedReferenceAssets = selectedReferenceAssets.filterNot { it.mediaPath == asset.mediaPath } + asset
+                }
                 markStateChanged()
             } catch (ce: CancellationException) {
                 throw ce
