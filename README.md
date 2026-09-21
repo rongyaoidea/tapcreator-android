@@ -41,6 +41,8 @@ Tapcreator 是一款 Android 端 AI 自主创作应用。它内置一个自主 A
 
 ### 版本
 
+**v1.6.0** — 工作台 UI 收敛：底部入口精简为「新建节点 / Agent」，创作面板与节点检查器统一为底部抽屉；筛选收进画布菜单，选中改为浮动操作条（重跑/删除/取消）；节点菜单按类型裁剪；画布内 Agent 面板支持半屏/近全屏；缩放升级为适配视图；空画布新增模板起稿（产品海报/角色三视图/电影感短视频/分镜脚本）
+
 **v1.5.0** — 对齐主流无限画布工作台交互：节点参数检查器（改提示词/换模型/调比例后原地重跑）、节点面板（文本/音频/上传/角色）、画布内可收起 Agent 面板、批量重跑选中、撤销/重做、节点运行按钮
 
 **v1.4.0** — 画布升级为节点式工作台：节点留存生成参数，支持单节点重跑/复制为变体/版本标记；新增画布快照与回滚、端口拖拽连线、DAG 分层自动布局、小地图/对齐吸附/框选、角色节点与画布合成成片；Room 迁移至 v17
@@ -89,6 +91,8 @@ Tapcreator is an Android autonomous AI creation app. It features a built-in auto
 | Build | Gradle KTS + AGP 8.5.2 |
 
 ### Version
+
+**v1.6.0** — Streamlined workbench UI: bottom entries reduced to "New node / Agent", creation panel and node inspector unified as bottom sheets; filters moved into the canvas menu, selection turned into a floating action bar (rerun / delete / cancel); node menu tailored per node type; in-canvas Agent panel supports half-screen / near-full-screen; zoom upgraded to fit-view; empty canvas offers starter templates (product poster / character sheet / cinematic short / storyboard script)
 
 **v1.5.0** — Aligned with mainstream infinite-canvas workbench UX: node inspector (edit prompt / switch model / adjust ratio and rerun in place), node palette (text / audio / upload / character), collapsible in-canvas Agent panel, batch rerun of selection, undo/redo, and per-node run button
 
